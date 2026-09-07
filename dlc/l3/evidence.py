@@ -686,8 +686,7 @@ _SUSPECT_ATTR_KEYS = (
 _DATA_ELEMENTS = ("ROM", "RAM", "EEPROM", "RAMDualPort", "LookUpTable")
 
 
-def _suspect_attrs(comp, *, hide_rom_words: bool = False,
-                   comp_index: int | None = None) -> dict:
+def _suspect_attrs(comp) -> dict:
     out: dict = {}
     for k in _SUSPECT_ATTR_KEYS:
         v = comp.attributes.get(k)
@@ -698,66 +697,7 @@ def _suspect_attrs(comp, *, hide_rom_words: bool = False,
         tokens = [t for t in str(raw or "").replace(",", " ").split() if t]
         out["data_words_stored"] = len(tokens)
         if not tokens:
-            idx_txt = ("<this component>" if comp_index is None
-                       else str(comp_index))
-            out["data_note"] = (
-                "Data is EMPTY - every address reads 0. To program it, "
-                "use exactly: {\"op\": \"change_attribute\", "
-                f"\"component_index\": {idx_txt}, \"name\": "
-                "\"Data\", \"value\": \"w0,w1,...\"} - comma-separated "
-                "hex words, address 0 first, one word PER ADDRESS the "
-                "circuit uses. The attribute name is Data, never Value, "
-                f"and the component_index MUST be {idx_txt} (this "
-                "storage element itself, never a gate).")
-        elif not hide_rom_words and len(tokens) <= 32:
-            out["stored_words"] = ",".join(tokens)
-    return out
-
-
-def _data_output_bit_map(circuit, netlist, data_idx: int) -> dict:
-    from dlc.facts.splitter import parse_splitting
-
-    def net_of(comp_idx, pin_name):
-        for net in netlist.nets:
-            for p in net.pins:
-                if p.component_index == comp_idx and p.pin_name == pin_name:
-                    return net
-        return None
-
-    start = net_of(data_idx, "D")
-    if start is None:
-        return {}
-    bits = int(circuit.components[data_idx].attributes.get("Bits", 1) or 1)
-    out: dict[str, list[int]] = {}
-    queue = [(start, {i: i for i in range(bits)})]
-    seen: set[int] = set()
-    while queue:
-        net, pos_map = queue.pop()
-        if net.net_id in seen:
-            continue
-        seen.add(net.net_id)
-        for p in net.pins:
-            comp = circuit.components[p.component_index]
-            if comp.element_name == "Out" and p.direction == "in":
-                label = comp.label or f"Out[{p.component_index}]"
-                got = sorted(pos_map.values())
-                if got:
-                    out[label] = got
-            elif (comp.element_name == "Splitter"
-                  and p.direction == "in"):
-                try:
-                    groups = parse_splitting(str(
-                        comp.attributes.get("Output Splitting", "")))
-                except ValueError:
-                    continue
-                for gi, grp in enumerate(groups):
-                    sub = {k - grp.bit_lo: v for k, v in pos_map.items()
-                           if grp.bit_lo <= k <= grp.bit_hi}
-                    if not sub:
-                        continue
-                    nxt = net_of(p.component_index, f"out{gi}")
-                    if nxt is not None:
-                        queue.append((nxt, sub))
+            out["data_note"] = "Data is EMPTY - every address reads 0."
     return out
 
 
@@ -801,16 +741,14 @@ def _address_input_drivers(circuit, netlist, addr_net_id,
 
 
 def suspect_wiring(circuit, netlist, indices: list[int],
-                   rep_rows: list["RowEvidence"] | None = None,
-                   hide_rom_words: bool = False) -> list[dict]:
+                   rep_rows: list["RowEvidence"] | None = None) -> list[dict]:
     out: list[dict] = []
     names = net_names_map(circuit, netlist)
     for idx in indices:
         if not (0 <= idx < len(circuit.components)):
             continue
         comp = circuit.components[idx]
-        attrs = _suspect_attrs(comp, hide_rom_words=hide_rom_words,
-                               comp_index=idx)
+        attrs = _suspect_attrs(comp)
         pins: list[dict] = []
         for net in netlist.nets:
             mine = [p for p in net.pins if p.component_index == idx]
@@ -864,8 +802,7 @@ def _compact_suspects(report: dict) -> dict:
 
 def build_payload(compact_circuit: dict, spec: TestSpec, cluster: Cluster, *,
                   circuit=None, netlist=None,
-                  max_representatives: int = _MAX_REPRESENTATIVES,
-                  hide_rom_words: bool = False) -> dict:
+                  max_representatives: int = _MAX_REPRESENTATIVES) -> dict:
     reps = cluster.rows[:max_representatives]
     payload = {
         "contract": CONTRACT,
@@ -901,8 +838,7 @@ def build_payload(compact_circuit: dict, spec: TestSpec, cluster: Cluster, *,
             if comp.element_name in _DATA_ELEMENTS and i not in indices:
                 indices.append(i)
         payload["suspect_wiring"] = suspect_wiring(
-            circuit, netlist, indices,
-            rep_rows=reps, hide_rom_words=hide_rom_words)
+            circuit, netlist, indices, rep_rows=reps)
         for rec in payload["suspect_wiring"]:
             comp = circuit.components[rec["component_index"]]
             if comp.element_name not in _DATA_ELEMENTS:
@@ -924,35 +860,6 @@ def build_payload(compact_circuit: dict, spec: TestSpec, cluster: Cluster, *,
                 rec["component_index"], cluster.rows)
             if aid:
                 rec["address_input_drivers"] = aid
-            bit_map = _data_output_bit_map(
-                circuit, netlist, rec["component_index"])
-            if bit_map:
-                rec["output_bit_map"] = {
-                    label: (f"bit {bits[0]}" if len(bits) == 1
-                            else f"bits {bits[0]}-{bits[-1]}")
-                    for label, bits in bit_map.items()}
-            bindings = match_variables_to_io(spec.headers, circuit)
-            hdr_idx = {h: i for i, h in enumerate(spec.headers)}
-            spec_rows = {r.line_index: r for r in spec.rows
-                         if not r.is_malformed}
-            exp: dict[str, dict] = {}
-            for r in cluster.rows:
-                row = spec_rows.get(r.row_index)
-                if row is None:
-                    continue
-                vals = {}
-                for h, b in bindings.items():
-                    if b.role != "output":
-                        continue
-                    i = hdr_idx[h]
-                    if i < len(row.values):
-                        tok = row.values[i]
-                        if tok.kind == "int" and tok.value is not None:
-                            vals[h] = tok.value
-                if vals:
-                    exp[str(r.row_index)] = vals
-            if exp:
-                rec["expected_outputs_by_row"] = exp
     return payload
 
 
@@ -964,8 +871,7 @@ def assemble_evidence(circuit, netlist, graph, spec: TestSpec, *,
                       max_clusters: int = _MAX_CLUSTERS,
                       max_representatives: int = _MAX_REPRESENTATIVES,
                       max_failing: int = GROSS_MAX_FAILING,
-                      lazy_exempt: bool = False,
-                      hide_rom_words: bool = False) -> EvidenceResult:
+                      lazy_exempt: bool = False) -> EvidenceResult:
     res = EvidenceResult(spec_name=spec.name, headers=list(spec.headers))
     bindings = match_variables_to_io(spec.headers, circuit)
     rows_by_index = {r.line_index: r for r in spec.rows if not r.is_malformed}
@@ -1113,8 +1019,7 @@ def assemble_evidence(circuit, netlist, graph, spec: TestSpec, *,
     res.payloads = [
         build_payload(compact_circuit, spec, c, circuit=circuit,
                       netlist=netlist,
-                      max_representatives=max_representatives,
-                      hide_rom_words=hide_rom_words)
+                      max_representatives=max_representatives)
         for c in clusters
     ]
     return res

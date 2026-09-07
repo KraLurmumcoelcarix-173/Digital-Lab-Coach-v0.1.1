@@ -488,71 +488,18 @@ def _diagnosis_line(cluster) -> str:
 _DATA_ELEMENTS = ("ROM", "RAM", "EEPROM", "RAMDualPort", "LookUpTable")
 
 
-def _retarget_data_ops(circuit, ops: list[dict]):
-    roms = [i for i, c in enumerate(circuit.components)
-            if c.element_name in _DATA_ELEMENTS]
-    if len(roms) != 1:
-        return ops, None
-    out, moved = [], []
-    for op in ops:
-        if (isinstance(op, dict) and op.get("op") == "change_attribute"
-                and op.get("name") == "Data"):
-            idx = op.get("component_index")
-            ok = (isinstance(idx, int)
-                  and 0 <= idx < len(circuit.components)
-                  and circuit.components[idx].element_name
-                  in _DATA_ELEMENTS)
-            if not ok:
-                moved.append(idx)
-                op = {**op, "component_index": roms[0]}
-        out.append(op)
-    if not moved:
-        return ops, None
-    return out, (f"a stored-Data rewrite aimed at component(s) "
-                 f"{moved} was redirected to the circuit's only "
-                 f"storage element [{roms[0]}] before verification.")
-
-
-def _touches_stored_data(ops_lists: list[list[dict]],
-                         circuit=None) -> bool:
-    for ops in ops_lists:
-        for op in (ops or []):
-            if not (isinstance(op, dict) and op.get("name") == "Data"):
-                continue
-            if circuit is None:
-                return True
-            idx = op.get("component_index")
-            if not (isinstance(idx, int)
-                    and 0 <= idx < len(circuit.components)):
-                return True
-            raw = circuit.components[idx].attributes.get("Data", "")
-            if str(raw or "").strip():
-                return True
-    return False
-
 _ROM_NOTE = (
     "\n\n[ROM NOTE]\n"
-    "The ROM(s) in this circuit hold the official contents registered for "
-    "this lab, checked word for word before this run. Those stored words "
-    "are correct by definition - never propose a Data change on them "
-    "(such a change is stripped before verification); the failing rows "
-    "come from wiring, selects, or other components."
-)
-
-_DATA_REFUTED_STEER = (
-    "\nMACHINE FACT: a stored-Data rewrite was already applied and "
-    "REFUTED by the re-run above — the stored words satisfy every row "
-    "that passes today, so the table content is NOT the bug. Do NOT "
-    "propose another Data change. The failing rows read the WRONG WORD: "
-    "suspect the ADDRESS/SELECT path instead — the detect gates, "
-    "comparators and encoder/selector inputs that choose which word is "
-    "read. Run the gate-kind sanity check on each of them using the "
-    "values table."
+    "Stored data (ROM / LookUpTable contents) is never the fix in this "
+    "analysis: every ROM in a registered lab file was checked word for "
+    "word against the official contents before this run, and any Data "
+    "change you propose is stripped before verification. Treat the "
+    "stored words as correct; the failing rows come from wiring, "
+    "selects, gates, or other components."
 )
 
 
 def _refutation_block(ops: list[dict], verdict: dict,
-                      circuit=None,
                       target_rows: list[int] | None = None) -> str:
     payload = {
         "refuted_ops": ops,
@@ -588,9 +535,7 @@ def _refutation_block(ops: list[dict], verdict: dict,
         )
     return ("\n\n[REFUTED ATTEMPT]\n"
             + json.dumps(payload, indent=2, default=str)
-            + steer
-            + (_DATA_REFUTED_STEER
-               if _touches_stored_data([ops], circuit) else ""))
+            + steer)
 
 
 def _rank_key(h: dict):
@@ -611,29 +556,18 @@ def dedupe_hypotheses(hyps: list[dict]) -> list[dict]:
     return sorted(by_ops.values(), key=_rank_key)
 
 
-def _protected_roms(circuit, source_name: str | None) -> set[int]:
-    if circuit is None or not source_name:
+def _storage_indices(circuit) -> set[int]:
+    if circuit is None:
         return set()
-    base = Path(str(source_name)).name
-    if base.startswith(".dlc_injected__"):
-        base = base[len(".dlc_injected__"):]
-    try:
-        from dlc.l3.official_store import get_runtime_payload
-        if not get_runtime_payload(base, "rom"):
-            return set()
-    except Exception:
-        return set()
-    roms = [i for i, comp in enumerate(circuit.components)
-            if comp.element_name == "ROM"]
-    flagged = {i for i in roms
-               if circuit.components[i].attributes.get("isProgramMemory")}
-    return flagged or set(roms)
+    return {i for i, comp in enumerate(circuit.components)
+            if comp.element_name in _DATA_ELEMENTS}
 
 
 _ROM_STUDENT_NOTE = (
-    "A proposed rewrite of a ROM was dropped: it already holds the "
-    "official contents registered for this lab, and the coach never edits "
-    "it - the bug is elsewhere."
+    "A proposed rewrite of stored data (ROM contents) was dropped: the "
+    "coach never edits a ROM — registered lab ROMs were checked before "
+    "this run, and stored words are never the fix here. The bug is "
+    "elsewhere."
 )
 
 
@@ -774,13 +708,11 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
             notes.append(f"Digital runner failed ({type(exc).__name__}); "
                          "falling back to the built-in evaluator.")
 
-    progmem = _protected_roms(circuit,
-                                        source_filename or dig_path)
+    progmem = _storage_indices(circuit)
     evres = ev.assemble_evidence(
         circuit, netlist, graph, spec, manifest=manifest,
         failing_indices=failing_indices, jar_mismatches=jar_mismatches,
         lazy_exempt=lazy_exempt,
-        hide_rom_words=bool(progmem),
     )
     notes.extend(evres.notes)
 
@@ -855,9 +787,7 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
     def norm(clean: dict | None) -> dict | None:
         if clean is None:
             return None
-        ops2, note = _retarget_data_ops(circuit, clean["ops"])
-        if note and note not in notes:
-            notes.append(note)
+        ops2 = list(clean["ops"])
         if progmem:
             def _smuggles_program(op) -> bool:
                 if not isinstance(op, dict):
@@ -940,7 +870,6 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
         verdict = verify(clean["ops"], cluster_rows + consequences)
         if not verdict["confirmed"] and refuted_total < _MAX_REFUTED_IDEAS:
             retry = ask(prompt + _refutation_block(clean["ops"], verdict,
-                                                   circuit,
                                                    target_rows=cluster_rows))
             if retry.get("ok"):
                 clean2, err2 = validate_hypothesis(
@@ -994,10 +923,7 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
                     (_ROM_NOTE if progmem else "")
                     + "\n\n[ESCALATION]\n"
                     + json.dumps({"refuted_ops": tried[ci]}, indent=2,
-                                 default=str)
-                    + (_DATA_REFUTED_STEER
-                       if _touches_stored_data(tried[ci], circuit)
-                       else ""))
+                                 default=str))
                 reply = ask(prompt)
                 if not reply.get("ok"):
                     continue

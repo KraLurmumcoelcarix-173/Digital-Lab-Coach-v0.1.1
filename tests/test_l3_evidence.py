@@ -398,7 +398,7 @@ def test_dead_trunk_full_output_surface_is_analyzable():
     assert res.payloads[0].get("suspect_wiring")
 
 
-def test_suspect_attrs_show_student_words_hide_injected_ones():
+def test_suspect_attrs_never_carry_stored_words():
     from types import SimpleNamespace
     from dlc.l3.evidence import _suspect_attrs
 
@@ -406,16 +406,15 @@ def test_suspect_attrs_show_student_words_hide_injected_ones():
                           attributes={"AddrBits": 3, "Bits": 8,
                                       "Data": "82,86,80"})
     shown = _suspect_attrs(rom)
-    assert shown["stored_words"] == "82,86,80"
+    assert "stored_words" not in shown
+    assert "82,86,80" not in str(shown)
     assert shown["data_words_stored"] == 3
+    assert "data_note" not in shown
 
-    hidden = _suspect_attrs(rom, hide_rom_words=True)
-    assert "stored_words" not in hidden
-    assert hidden["data_words_stored"] == 3
-
-    big = SimpleNamespace(element_name="ROM",
-                          attributes={"Data": ",".join(["1"] * 33)})
-    assert "stored_words" not in _suspect_attrs(big)
+    empty = SimpleNamespace(element_name="ROM",
+                            attributes={"AddrBits": 3, "Bits": 8})
+    note = _suspect_attrs(empty)["data_note"]
+    assert "EMPTY" in note and "change_attribute" not in note
 
 
 def test_address_input_drivers_traces_selector_gates():

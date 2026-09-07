@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from dlc.l3 import debugger
-from dlc.l3.debugger import debug_circuit, _protected_roms
+from dlc.l3.debugger import debug_circuit, _storage_indices
 from dlc.parser.dig_parser import parse_dig_file
 
 
@@ -111,17 +111,16 @@ def _fake(replies):
     return call
 
 
-def test_protected_indices_need_payload_and_flag(monkeypatch, tmp_path):
+def test_storage_indices_cover_every_rom_with_or_without_registration(
+        monkeypatch, tmp_path):
     path = _write_lab(tmp_path)
     circuit = parse_dig_file(path)
     monkeypatch.setenv("DLC_OFFICIAL_DEFAULTS_PATH",
                        str(tmp_path / "missing.json"))
-    assert _protected_roms(circuit, "proglab.dig") == set()
+    assert _storage_indices(circuit) == {_ROM_IDX}
     _register_payload(monkeypatch, tmp_path, "proglab.dig")
-    assert _protected_roms(circuit, "proglab.dig") == {_ROM_IDX}
-    assert _protected_roms(
-        circuit, ".dlc_injected__proglab.dig") == {_ROM_IDX}
-    assert _protected_roms(circuit, None) == set()
+    assert _storage_indices(circuit) == {_ROM_IDX}
+    assert _storage_indices(None) == set()
 
 
 def test_program_data_op_is_stripped_and_run_says_why(monkeypatch,
@@ -135,41 +134,39 @@ def test_program_data_op_is_stripped_and_run_says_why(monkeypatch,
     assert res["cards"] == []
     assert any(d["reason"] == "rom_protected"
                for d in res["dropped_ideas"])
-    assert any("never edits it" in n for n in res["notes"])
+    assert any("never edits a ROM" in n for n in res["notes"])
     assert "\n[ROM NOTE]\n" in call.log[0]
-    assert "such a change is stripped before verification" in call.log[0]
+    assert "is stripped before verification" in call.log[0]
 
 
-def test_without_payload_the_same_op_flows_normally(monkeypatch,
-                                                    tmp_path):
+def test_data_op_is_stripped_even_without_registered_contents(monkeypatch,
+                                                              tmp_path):
     monkeypatch.setenv("DLC_OFFICIAL_DEFAULTS_PATH",
                        str(tmp_path / "missing.json"))
     path = _write_lab(tmp_path)
     call = _fake([_data_fix_reply()])
     res = debug_circuit(path, call=call, use_manifest=False,
                         source_filename="proglab.dig")
-    assert res["cards"] and res["cards"][0]["verified"]["confirmed"]
-    assert res["cards"][0]["fix"]["ops"][0]["name"] == "Data"
-    assert "\n[ROM NOTE]\n" not in call.log[0]
+    assert res["cards"] == []
+    assert any(d["reason"] == "rom_protected" for d in res["dropped_ideas"])
+    assert "\n[ROM NOTE]\n" in call.log[0]
 
 
-def test_unflagged_rom_is_protected_when_a_payload_exists(monkeypatch,
-                                                          tmp_path):
-    _register_payload(monkeypatch, tmp_path, "proglab.dig")
+def test_unflagged_rom_is_protected_too(tmp_path):
     p = tmp_path / "proglab.dig"
     p.write_text(_PROG_LAB.replace(
         _entry("isProgramMemory", "true", tag="boolean"), ""),
         encoding="utf-8")
     circuit = parse_dig_file(str(p))
     assert not circuit.components[_ROM_IDX].attributes.get("isProgramMemory")
-    assert _protected_roms(circuit, "proglab.dig") == {_ROM_IDX}
+    assert _storage_indices(circuit) == {_ROM_IDX}
 
 
 def test_prompt_teaches_the_rom_rule():
     from dlc.l3.debugger import _load_prompt
     text = _load_prompt()
     assert "[ROM NOTE]" in text
-    assert "stripped before verification" in text
+    assert "IS NEVER THE FIX" in text
     assert "[PROGRAM MEMORY]" not in text
 
 
@@ -225,4 +222,4 @@ def test_add_component_smuggle_route_is_also_stripped(monkeypatch,
                 if c["verified"]["confirmed"]]
     blob = json.dumps(res)
     assert '"5,6"' not in blob
-    assert any("never edits it" in n for n in res["notes"])
+    assert any("never edits a ROM" in n for n in res["notes"])

@@ -137,30 +137,6 @@ def test_refuted_fix_earns_one_retry_with_evidence():
     assert res["cards"][0]["fix"]["ops"] == GOOD_OPS
 
 
-def test_refuted_rom_data_rewrite_steers_the_retry_off_the_table():
-    from types import SimpleNamespace
-    from dlc.l3.debugger import _touches_stored_data, _refutation_block
-
-    data_op = [{"op": "change_attribute", "component_index": 0,
-                "name": "Data", "value": "82,86"}]
-    stored = SimpleNamespace(components=[
-        SimpleNamespace(attributes={"Data": "1,2,3"})])
-    empty = SimpleNamespace(components=[SimpleNamespace(attributes={})])
-    assert _touches_stored_data([data_op], stored) is True
-    assert _touches_stored_data([data_op], empty) is False
-    assert _touches_stored_data([data_op], None) is True
-    assert _touches_stored_data([GOOD_OPS], stored) is False
-
-    verdict = {"apply_ok": True, "still_failing": [0], "regressions": [],
-               "details": {}, "warning": None}
-    assert "MACHINE FACT" in _refutation_block(data_op, verdict, stored)
-    assert "MACHINE FACT" not in _refutation_block(data_op, verdict, empty)
-    call2 = _fake([_reply(BAD_OPS), _reply(GOOD_OPS)])
-    debug_circuit(_BUG3, call=call2, use_manifest=False,
-                  failing_indices=[0, 1])
-    assert "MACHINE FACT" not in call2.log[1]
-
-
 def test_unknown_op_is_a_format_error_then_dropped():
     bad = _reply(GOOD_OPS)
     bad["fix"]["ops"] = [{"op": "explode_everything"}]
@@ -622,41 +598,14 @@ def test_control_unit_files_skip_the_lazy_gate(tmp_path):
     assert any("lazy-gate checks skipped" in n for n in res2["notes"])
 
 
-def test_prompt_checks_stored_data_first_not_last():
-    from dlc.l3.debugger import _load_prompt
+def test_prompt_treats_stored_data_as_fixed():
+    from dlc.l3.debugger import _load_prompt, _ROM_NOTE
     text = _load_prompt()
-    assert "LAST RESORT" not in text
-    assert "CHECK IT FIRST" in text
+    assert "CHECK IT FIRST" not in text
+    assert "derive the FULL table" not in text
+    assert "IS NEVER THE FIX" in text
     assert "[ROM NOTE]" in text
-
-def test_retarget_data_ops_unit():
-    from types import SimpleNamespace
-    from dlc.l3.debugger import _retarget_data_ops
-
-    def circ(*names):
-        return SimpleNamespace(components=[
-            SimpleNamespace(element_name=n, attributes={}) for n in names])
-
-    one_rom = circ("In", "ROM", "And", "Out")
-    bad = [{"op": "change_attribute", "component_index": 2,
-            "name": "Data", "value": "5,6"}]
-    fixed, note = _retarget_data_ops(one_rom, bad)
-    assert fixed[0]["component_index"] == 1
-    assert "redirected" in note
-
-    ok = [{"op": "change_attribute", "component_index": 1,
-           "name": "Data", "value": "5,6"}]
-    same, note2 = _retarget_data_ops(one_rom, ok)
-    assert same == ok and note2 is None
-
-    non_data = [{"op": "change_attribute", "component_index": 2,
-                 "name": "Value", "value": 0}]
-    same3, note3 = _retarget_data_ops(one_rom, non_data)
-    assert same3 == non_data and note3 is None
-
-    two_roms = circ("ROM", "ROM", "And")
-    same4, note4 = _retarget_data_ops(two_roms, bad)
-    assert same4 == bad and note4 is None
+    assert "never the fix" in _ROM_NOTE
 
 
 def test_verify_ops_exposes_remaining_failing():
@@ -716,21 +665,21 @@ _ROM_DECOY = (
 )
 
 
-def test_misdirected_data_op_is_retargeted_verified_and_stops(tmp_path):
+def test_data_op_on_any_rom_is_stripped(tmp_path):
     p = tmp_path / "romdecoy.dig"
     p.write_text(_ROM_DECOY, encoding="utf-8")
-    reply = _reply([{"op": "change_attribute", "component_index": 5,
+    reply = _reply([{"op": "change_attribute", "component_index": 1,
                      "name": "Data", "value": "5,6"}],
                    why="the lookup stage reads 0 on every failing row")
-    call = _fake([reply])
+    call = _fake([reply, reply])
     res = debug_circuit(str(p), call=call, use_manifest=False)
     assert res["mode"] == "analysis"
-    assert res["llm_calls"] == 1
-    assert len(res["cards"]) == 1
-    card = res["cards"][0]
-    assert card["verified"]["confirmed"] is True
-    assert card["fix"]["ops"][0]["component_index"] == 1
-    assert any("redirected" in n for n in res["notes"])
+    assert res["cards"] == []
+    assert res["dropped_ideas"] and all(
+        d["reason"] == "rom_protected" for d in res["dropped_ideas"])
+    assert any("never edits a ROM" in n for n in res["notes"])
+    assert "\n[ROM NOTE]\n" in call.log[0]
+    assert '"5,6"' not in json.dumps(res["cards"])
 
 
 def test_truncated_reply_earns_a_json_only_retry():
@@ -785,8 +734,9 @@ def test_refutation_block_names_partial_progress():
 def test_prompt_teaches_the_wrong_address_rule():
     from dlc.l3.debugger import _load_prompt
     text = _load_prompt()
-    assert "WRONG ADDRESS beats wrong data" in text
+    assert "the ADDRESS PATH is the bug" in text
     assert "address_input_drivers" in text
+    assert "address_by_row" in text
 
 
 def test_opus5_thinking_depth_is_bounded():

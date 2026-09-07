@@ -218,11 +218,10 @@ Evidence stage (`assemble_evidence`):
   when the component has one) and its value on
   the representative rows. `attrs` carries the fix-relevant attributes
   (Bits, Value, Selector Bits, splitting ranges, inputBits/outputBits,
-  Signed, …). Storage records add `data_words_stored`, either a
-  `data_note` (empty Data, with the exact op to program it) or
-  `stored_words` (32 words or fewer, hidden when the file has registered
-  ROM contents), `address_by_row`, `address_input_drivers`,
-  `output_bit_map` and `expected_outputs_by_row`.
+  Signed, …). Storage records add `data_words_stored` (plus a
+  `data_note` when the Data is empty), `address_by_row` and
+  `address_input_drivers`; the stored words themselves never ride the
+  payload, since stored data is never the fix (§5).
 - Nothing is sent twice: net values carry `hex` and `bits` only (the
   decimal duplicate stays server-side), null-valued suspect fields and
   empty labels are omitted, and a select-path finding is spelled out once
@@ -232,14 +231,14 @@ Evidence stage (`assemble_evidence`):
   `suspect_wiring`; the run notes say so.
 
 The prompt is `prompts/l3_modeA_hypothesis_v1.txt` with `<<PAYLOAD_JSON>>`
-replaced. Appended blocks: `[ROM NOTE]` when the filename has registered
-ROM contents (the ROM gate has verified them word for word; Data changes
-on those ROMs are stripped before verification and their words stay out
-of the payload); `# FORMAT RETRY` after a reply that is not the
+replaced. Appended blocks: `[ROM NOTE]` when the circuit holds a storage
+element (stored data is never the fix: registered ROMs were verified by
+the ROM gate, Data changes are stripped before verification and the
+words stay out of the payload); `# FORMAT RETRY` after a reply that is not the
 strict JSON object (once); `[REFUTED ATTEMPT]` after a refuted fix (once
 per cluster) with the re-run's still-failing and regressed rows, a
-partial-fix steer when the refuted ops repaired some cluster rows, and a
-stored-data steer when a Data rewrite was refuted; `[ESCALATION]` on the
+partial-fix steer when the refuted ops repaired some cluster rows;
+`[ESCALATION]` on the
 final attempt (§5). Every call is one plain completion: no tools, no
 iteration; the model reasons only over the payload and never invents
 nets, widths or values.
@@ -324,12 +323,10 @@ anything is shown.
 
 For each reply, in order:
 
-1. **Normalize.** A `Data` rewrite aimed at a component that is not the
-   circuit's single storage element is redirected to that element (noted
-   in the run). Data changes on a registered ROM (the ROMs marked
-   Program Memory, else every ROM, of a file whose filename has
-   registered ROM contents) are stripped; a reply left with no ops is
-   dropped as `rom_protected`.
+1. **Normalize.** Stored data is never the fix: a `Data` change on any
+   storage element (ROM, LookUpTable, EEPROM, RAM) and any added
+   component carrying `Data` are stripped; a reply left with no ops is
+   dropped as `rom_protected` and the run notes say so.
 2. **Apply** (`apply_patch`): unknown op → fail; the patched temp is
    written next to the source (so children resolve); it must re-parse and
    must not add Layer-1 errors compared with the original (the L1

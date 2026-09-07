@@ -507,6 +507,8 @@ Mode C (per-spec fallback to Mode B happens automatically).
 | `test_rom_gate_refuses_empty_or_wrong_rom_for_free` | Mode A reached the model, or charged a daily use, on a file whose ROM does not hold the registered contents. | `tests/test_server_l3_debug.py` |
 | `test_rom_gate_lets_matching_contents_through` | A matching ROM no longer reaches the coordinator, or `rom_verified` is wrong. | `tests/test_server_l3_debug.py` |
 | `test_with_rom_registers_the_file_rom` | `python -m dlc.fingerprint --with-rom` stops emitting the `runtime` blob, or `--merge` drops entries it should keep. | `tests/test_fingerprint_cli.py` |
+| `test_data_op_on_any_rom_is_stripped` | Mode A let a stored-data rewrite through as a fix; stored data is never the fix. | `tests/test_l3_debugger.py` |
+| `test_prompt_treats_stored_data_as_fixed` | The prompt again asks the model to derive or rewrite ROM contents. | `tests/test_l3_debugger.py` |
 
 ## When you add a new test
 
