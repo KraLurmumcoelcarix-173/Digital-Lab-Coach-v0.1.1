@@ -514,3 +514,20 @@ Mode C (per-spec fallback to Mode B happens automatically).
    `pytest.mark.skipif` so CI and fresh clones stay green.
 3. Add a row to the "Key tests" table above saying what a failure of
    the new test means.
+
+## Bug-benchmark guards for the Mode A evidence stage
+
+- `bug9_swapped_select_gate/`: an 8-bit mini ALU whose S1 select bit is
+  built by an And instead of an Or, so ADD rows return the AND arm and
+  XOR rows the OR arm. Guards the select-path and frozen-output signals:
+  the dead gate must be the top suspect of every cluster
+  (`test_l3_localizer.py`), the payload must name nets
+  (`test_l3_evidence.py`), and a `replace_element` fix must verify
+  (`test_l3_debugger.py`).
+- `bug10_writeback_select_swapped/`: a 2:1 write-back multiplexer whose
+  arms are swapped feeds a register-file child (`regfile.dig`, Digital's
+  RegisterFile behind the `rv32i_register_file` interface). The write
+  rows pass; the rows that read the written register fail later. Guards
+  the state trace: the trace names the write row and the mux is the top
+  suspect (`test_l3_evidence.py`), and a `swap_pins` fix verifies
+  (`test_l3_debugger.py`). The PC-divergence cut has its own unit test.

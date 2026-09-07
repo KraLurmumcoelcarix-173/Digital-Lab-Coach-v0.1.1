@@ -462,6 +462,16 @@ def _slim_payload(payload: dict) -> dict:
     return out
 
 
+def _consequence_lines(evres) -> list[str]:
+    d = getattr(evres, "divergence", None)
+    if not d or not d.get("rows"):
+        return []
+    rows = d["rows"]
+    return [f"Row(s) {rows[0]}–{rows[-1]} ({len(rows)}) follow the first "
+            f"{d['column']} divergence at row {d['first_row']} and are "
+            f"treated as its consequences."]
+
+
 def _diagnosis_line(cluster) -> str:
     rows = ", ".join(str(r.row_index) for r in cluster.rows)
     cols = ", ".join(cluster.signature.get("columns") or ["?"])
@@ -823,8 +833,9 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
         usage["output_tokens"] += u.get("output_tokens") or 0
         return r
 
+    consequences = list(getattr(evres, "consequential_rows", None) or [])
     original_failing = sorted(
-        {r.row_index for c in evres.clusters for r in c.rows})
+        {r.row_index for c in evres.clusters for r in c.rows} | set(consequences))
     coach_targets: dict[int, set] | None = None
     if coach_rows:
         want = set(coach_rows)
@@ -938,7 +949,7 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
                             "detail": _PROGMEM_STUDENT_NOTE})
             continue
 
-        verdict = verify(clean["ops"], cluster_rows)
+        verdict = verify(clean["ops"], cluster_rows + consequences)
         if not verdict["confirmed"] and refuted_total < _MAX_REFUTED_IDEAS:
             retry = ask(prompt + _refutation_block(clean["ops"], verdict,
                                                    circuit,
@@ -1008,7 +1019,7 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
                 clean = norm(clean)
                 if clean is None:
                     continue
-                verdict = verify(clean["ops"], cluster_rows)
+                verdict = verify(clean["ops"], cluster_rows + consequences)
                 hypotheses.append({"cluster_index": ci,
                                    "cluster_rows": cluster_rows,
                                    "confidence": clean["confidence"],
@@ -1084,7 +1095,8 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
         }
 
     return {**base, "mode": "analysis",
-            "diagnosis_lines": [_diagnosis_line(c) for c in evres.clusters],
+            "diagnosis_lines": ([_diagnosis_line(c) for c in evres.clusters]
+                                + _consequence_lines(evres)),
             "clusters": evres.to_dict()["clusters"],
             "cards": cards,
             "best_unverified": best_unverified,

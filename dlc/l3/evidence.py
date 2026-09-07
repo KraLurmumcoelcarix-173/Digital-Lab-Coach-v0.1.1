@@ -5,7 +5,8 @@ from pathlib import Path
 
 from dlc.analyzer.sequential import _CLOCKED_ELEMENTS as _STATE_ELEMENTS
 from dlc.facts.extractor import extract_facts
-from dlc.l3.localizer import SuspectReport, localize, merge_reports
+from dlc.l3.localizer import (SuspectReport, _net_of_pin, _witness_from_root,
+                              localize, merge_reports)
 from dlc.l3.manifest import decode_program_word, find_manifest
 from dlc.llm.explain import _compact_facts
 from dlc.parser.dig_parser import parse_dig_file
@@ -48,6 +49,7 @@ class RowEvidence:
     category: str | None = None
     program_word: str | None = None
     suspect_report: SuspectReport = field(default_factory=SuspectReport)
+    state_trace: dict | None = None
 
 
 @dataclass
@@ -68,6 +70,8 @@ class EvidenceResult:
     clusters: list[Cluster] = field(default_factory=list)
     payloads: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    consequential_rows: list[int] = field(default_factory=list)
+    divergence: dict | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -86,6 +90,7 @@ class EvidenceResult:
             ],
             "payloads": self.payloads,
             "notes": self.notes,
+            "consequential_rows": self.consequential_rows,
         }
 
 def _mask(bits: int | None) -> int:
@@ -212,6 +217,106 @@ def stuck_components(circuit, netlist, sims: dict[int, SimResult]) -> dict[int, 
             f"its output never changes over the whole testcase (always "
             f"{shown}) although its inputs do — dead or wrong-kind logic")
     return result
+
+
+def _pc_column(manifest, bindings) -> str | None:
+    pc = (((manifest or {}).get("program_decode") or {}).get("observe")
+          or {}).get("pc_port")
+    b = bindings.get(pc) if pc else None
+    return pc if b is not None and b.role == "output" else None
+
+
+_DIVERGENCE_MIN_TAIL = 3
+_DIVERGENCE_MIN_SHARE = 0.9
+
+
+def pc_divergence(failing: list[int], cells_by_row: dict[int, list[dict]],
+                  pc_col: str) -> tuple[int | None, list[int]]:
+    order = sorted(failing)
+    first = next((i for i in order
+                  if any(c.get("column") == pc_col
+                         for c in cells_by_row.get(i) or [])), None)
+    if first is None:
+        return None, []
+    tail = [i for i in order if i > first]
+    if len(tail) < _DIVERGENCE_MIN_TAIL:
+        return first, []
+    wrong = sum(1 for i in tail
+                if any(c.get("column") == pc_col
+                       for c in cells_by_row.get(i) or []))
+    if wrong / len(tail) < _DIVERGENCE_MIN_SHARE:
+        return first, []
+    return first, tail
+
+
+_REGFILE_WRITE_PINS = ("WriteReg", "WriteData", "RegWrite")
+
+
+def _instance_pin_nets(netlist, inst: int) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for net in netlist.nets:
+        for p in net.pins:
+            if p.component_index == inst:
+                out[p.pin_name] = net.net_id
+    return out
+
+
+def register_read_trace(circuit, netlist, graph, all_sims: dict, row_order: list[int],
+                        row_index: int, column: str, expected: int,
+                        width: int | None, net_names: dict | None):
+    out_idx = next((i for i, c in enumerate(circuit.components)
+                    if c.is_output() and (c.label or f"out_{i}") == column), None)
+    if out_idx is None:
+        return None
+    out_net = _net_of_pin(netlist, out_idx, "in", "in")
+    if out_net is None:
+        return None
+    inst = pin = None
+    for p in out_net.pins:
+        if (p.direction == "out"
+                and circuit.components[p.component_index].element_name.endswith(".dig")):
+            inst, pin = p.component_index, p.pin_name
+    if inst is None or not pin.startswith("ReadData"):
+        return None
+    pins = _instance_pin_nets(netlist, inst)
+    sel_pin = pin.replace("ReadData", "ReadReg")
+    if sel_pin not in pins or any(k not in pins for k in _REGFILE_WRITE_PINS):
+        return None
+    sim = all_sims.get(row_index)
+    if sim is None:
+        return None
+    reg = sim.net_values.get(pins[sel_pin])
+    if not reg:
+        return None
+    if row_index not in row_order:
+        return None
+    pos = row_order.index(row_index)
+    for w in reversed(row_order[:pos]):
+        s = all_sims.get(w)
+        if s is None:
+            continue
+        if (s.net_values.get(pins["RegWrite"]) == 1
+                and s.net_values.get(pins["WriteReg"]) == reg):
+            found = sim.net_values.get(out_net.net_id)
+            mask = (1 << width) - 1 if width else None
+            trace = {
+                "failing_row": row_index, "column": column, "register": reg,
+                "written_at_row": w,
+                "expected": f"0x{(expected & mask) if mask else expected:X}",
+                "read_back": None if found is None else f"0x{found:X}",
+                "write_row_net_values": {
+                    str(n): {"bits": s.net_bits.get(n, 1), "hex": format(v, "X")}
+                    for n, v in s.net_values.items()},
+            }
+            tag = f" at row {w}, when register {reg} was written"
+            boosts, wnotes = _witness_from_root(
+                circuit, netlist, graph, s, inst, pins["WriteData"],
+                expected, width, net_names=net_names, row_tag=tag)
+            note = (f"STATE TRACE: {column} on row {row_index} reads register "
+                    f"{reg}, which row {w} wrote as {trace['read_back']} while "
+                    f"{trace['expected']} was expected — judge row {w}.")
+            return trace, boosts, [note] + wnotes
+    return None
 
 
 def select_columns(circuit, netlist, spec: TestSpec, bindings=None) -> list[str]:
@@ -430,7 +535,8 @@ def gross_check(circuit, spec: TestSpec, failing_count: int, *,
 
 def _row_evidence(circuit, netlist, graph, spec, bindings, row, *,
                   sel_cols, manifest, sim=None, jar_cells=None,
-                  notes=None, stuck=None, net_names=None) -> RowEvidence:
+                  notes=None, stuck=None, net_names=None,
+                  all_sims=None, row_order=None) -> RowEvidence:
     if sim is None:
         sim = simulate_sequential(circuit, netlist, graph, spec,
                                   row.line_index)
@@ -445,9 +551,37 @@ def _row_evidence(circuit, netlist, graph, spec, bindings, row, *,
     col = {h: i for i, h in enumerate(spec.headers)}
     selects = [[h, row.values[col[h]].raw] for h in sel_cols]
     cat = row_category(circuit, netlist, sim, manifest)
+    expected = _expected_ints(spec, bindings, row)
+    steer_extra: dict = {}
+    trace = None
+    trace_notes: list[str] = []
+    if all_sims and row_order:
+        for m in mismatches:
+            colname = m.get("column")
+            if colname not in expected:
+                continue
+            try:
+                found = register_read_trace(
+                    circuit, netlist, graph, all_sims, row_order,
+                    row.line_index, colname, expected[colname][0],
+                    expected[colname][1], net_names)
+            except Exception:
+                found = None
+            if found is None:
+                continue
+            t, boosts, tnotes = found
+            if trace is None:
+                trace = t
+            for idx, hit in boosts.items():
+                if idx not in steer_extra or hit[0] > steer_extra[idx][0]:
+                    steer_extra[idx] = hit
+            trace_notes.extend(n for n in tnotes if n not in trace_notes)
     report = localize(circuit, netlist, graph, sim, outputs,
-                      expected_values=_expected_ints(spec, bindings, row),
-                      stuck=stuck, net_names=net_names)
+                      expected_values=expected, stuck=stuck,
+                      net_names=net_names, steer_extra=steer_extra or None)
+    for n in trace_notes:
+        if n not in report.notes:
+            report.notes.append(n)
     net_values = {
         str(nid): {
             "value": val,
@@ -467,6 +601,7 @@ def _row_evidence(circuit, netlist, graph, spec, bindings, row, *,
         category=cat["category"] if cat else None,
         program_word=cat["word"] if cat else None,
         suspect_report=report,
+        state_trace=trace,
     )
 
 def _bucket_key(r: RowEvidence):
@@ -758,6 +893,9 @@ def build_payload(compact_circuit: dict, spec: TestSpec, cluster: Cluster, *,
         payload["cluster"]["net_names"] = {
             str(nid): name for nid, name in sorted(names.items())
             if str(nid) in seen_nets}
+        traces = [r.state_trace for r in reps if r.state_trace]
+        if traces:
+            payload["cluster"]["state_trace"] = traces
         indices = list(cluster.merged.suspect_indices())
         for i, comp in enumerate(circuit.components):
             if comp.element_name in _DATA_ELEMENTS and i not in indices:
@@ -916,8 +1054,22 @@ def assemble_evidence(circuit, netlist, graph, spec: TestSpec, *,
             "output frozen over the whole testcase although inputs vary: "
             + ", ".join(f"{circuit.components[i].element_name}[{i}]"
                         for i in sorted(stuck)))
+    row_order = [r.line_index for r in spec.rows if not r.is_malformed]
+    evidence_rows = list(failing)
+    pc_col = _pc_column(manifest, bindings)
+    if pc_col and row_mismatch_cells and _holds_state(circuit):
+        first, tail = pc_divergence(failing, row_mismatch_cells, pc_col)
+        if tail:
+            res.consequential_rows = tail
+            res.divergence = {"column": pc_col, "first_row": first, "rows": tail}
+            res.notes.append(
+                f"{pc_col} leaves the expected path at row {first}; the "
+                f"{len(tail)} failing row(s) after it ({tail[0]}–{tail[-1]}) "
+                f"are its consequences and stay out of the evidence — a fix "
+                f"must still repair them.")
+            evidence_rows = [i for i in failing if i not in set(tail)]
     evidence: list[RowEvidence] = []
-    for idx in failing:
+    for idx in evidence_rows:
         row = rows_by_index.get(idx)
         if row is None:
             res.notes.append(
@@ -931,6 +1083,7 @@ def assemble_evidence(circuit, netlist, graph, spec: TestSpec, *,
                 sel_cols=sel_cols, manifest=manifest,
                 sim=sims.get(idx), jar_cells=jar_cells, notes=res.notes,
                 stuck=stuck, net_names=net_names,
+                all_sims=all_sims, row_order=row_order,
             ))
         except Exception as exc:
             res.notes.append(

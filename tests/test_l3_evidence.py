@@ -485,3 +485,41 @@ def test_payload_sends_nothing_twice():
     assert tags and all(len(t) < 90 for t in tags), tags
     assert any(n.startswith("SELECT-PATH: expected value found on net")
                for n in payload["suspects"]["notes"])
+
+
+_BUG10 = ("data/sample_circuits/30_bug_benchmark/bug10_writeback_select_swapped/"
+          "writeback_swapped.dig")
+
+
+def test_pc_divergence_marks_the_rows_after_the_first_pc_mismatch():
+    from dlc.l3.evidence import pc_divergence
+    cells = {41: [{"column": "ReadData1"}], 42: [{"column": "ReadData1"}],
+             43: [{"column": "PCout"}, {"column": "ReadData1"}],
+             44: [{"column": "PCout"}], 45: [{"column": "PCout"}],
+             46: [{"column": "PCout"}, {"column": "ReadData2"}]}
+    assert pc_divergence([41, 42, 43, 44, 45, 46], cells, "PCout") == (43, [44, 45, 46])
+    sporadic = {1: [{"column": "PCout"}], 2: [{"column": "R"}],
+                3: [{"column": "R"}], 4: [{"column": "R"}]}
+    assert pc_divergence([1, 2, 3, 4], sporadic, "PCout") == (1, [])
+    assert pc_divergence([41, 42], cells, "PCout") == (None, [])
+
+
+def test_bug10_state_trace_points_at_the_write_row_and_its_mux():
+    res = assemble_evidence_for_file(_BUG10, use_manifest=False)
+    assert res.mode == "analysis" and res.failing_count == 9
+    assert any("regfile.dig → rv32i_register_file" in n for n in res.notes)
+    payload = res.payloads[0]
+    traces = payload["cluster"]["state_trace"]
+    assert traces and all(t["written_at_row"] < t["failing_row"] for t in traces)
+    first = traces[0]
+    assert first["column"] == "ReadData1" and first["register"] == 1
+    assert first["written_at_row"] == 0 and "write_row_net_values" in first
+    top = payload["suspects"]["suspects"][0]
+    assert top["element_name"] == "Multiplexer"
+    assert any(r.startswith("SELECT-PATH suspect") and "wrote the register" in r
+               for r in top["reasons"])
+    notes = payload["suspects"]["notes"]
+    assert any(n.startswith("STATE TRACE: ReadData1 on row 2 reads register 1")
+               for n in notes)
+    assert any(n.startswith("SELECT-PATH at row 0, when register 1 was written")
+               for n in notes)

@@ -50,6 +50,13 @@ names; read `net_values` and each suspect_wiring pin's `net` through it
 so you reason about signals ("isShiftGroup is 0 on every SLL row"), not
 bare numbers. Two localizer reasons outrank every other clue when they
 appear on a suspect:
+`cluster.state_trace` (present only when a failing column is a
+register-file READ) names the register that was read and the EARLIER row
+that wrote it, with that row's full `write_row_net_values`. Judge the
+write row, not the failing row: the wrong value was chosen there — find
+the write-data multiplexer arm that held the expected value and the
+select logic that skipped it. Rows a note lists as consequences of a
+program-counter divergence are not in the evidence but must pass too.
 - "SELECT-PATH suspect": the expected value already sits on another arm
   of that multiplexer, so the data path is RIGHT and the logic driving
   its `sel` chose the wrong arm (the full finding — which net, which arm,

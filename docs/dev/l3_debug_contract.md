@@ -115,6 +115,12 @@ Evidence stage (`assemble_evidence`):
     failing row shows the same wrong value per column while the passing
     rows expect one constant — makes a single cluster so a fix must repair
     every row.
+11b. **PC divergence** (labs whose manifest names `observe.pc_port`): once
+    the program counter is wrong on a row and stays wrong on at least 90%
+    of the failing rows after it (3 or more), those later rows are
+    consequences of the divergence. They stay out of the evidence and
+    the clusters (`consequential_rows`, a note and a diagnosis line say
+    so) but every fix is still verified against them.
 12. **Per-cluster evidence**: full net values for the first 2 rows of the
     cluster, compact expected-vs-found for the rest, `localize()` per row,
     `merge_reports()` per cluster, one payload per cluster.
@@ -164,6 +170,16 @@ Evidence stage (`assemble_evidence`):
   NetName, else the label of an In/Out/Clock on the net) for the nets in
   `representative_evidence`. The same name appears as `net` on every
   `suspect_wiring` pin entry.
+- `cluster.state_trace` (only when a failing column is a register-file
+  READ, i.e. the output is driven by a subcircuit instance with
+  `ReadRegN`/`WriteReg`/`WriteData`/`RegWrite` pins): for each
+  representative row, the register it read, the last earlier row that
+  wrote it (`written_at_row`), `expected` vs `read_back`, and that write
+  row's full `write_row_net_values`. The witness search then runs on the
+  write row below the instance, so the write-data multiplexer and its
+  select logic are boosted (`… at the row that wrote the register`) and
+  `suspects.notes` carries `STATE TRACE: …` plus the select-path sentence
+  for that row.
 - `suspects` is the merged localizer report. Per row, every component in
   the static cone of a failing output is scored: on the row's ACTIVE path
   (mux arms actually selected) +3.0, plus +1.0 per additional failing

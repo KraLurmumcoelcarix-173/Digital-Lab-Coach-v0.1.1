@@ -19,8 +19,6 @@ coach reason about a CPU's program.
 A manifest holds only input patterns and names. No expected outputs, no
 wiring, no solution content ever goes in it.
 
----
-
 ## Quick start
 
 1. **Register the official tests**: Settings ⚙ → Official tests →
@@ -41,8 +39,6 @@ wiring, no solution content ever goes in it.
 
 The shipped manifests already cover the COMP 311 labs. A lab without
 opcodes, digit classes or subcircuit roles needs no manifest at all.
-
----
 
 ## The manifest
 
@@ -165,8 +161,6 @@ With this block the coach decodes every program word, runs the program
 through a small RV32I interpreter, and can build a correct extension on
 its own when the model's proposal fails verification.
 
----
-
 ## Choosing the model
 
 Each Layer 3 board has a model picker: **Sonnet 4.6 (default)** or
@@ -179,8 +173,6 @@ order: the environment variables `DLC_L3_DEBUG_MODEL` (Mode A) and
 `l3_propose_model` in `~/.dlc/config.json`, else the built-in default.
 There is no model field in Settings. Through the course proxy the same
 choice applies and the course key pays.
-
----
 
 ## Official tests: who can change what
 

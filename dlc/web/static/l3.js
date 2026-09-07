@@ -2130,7 +2130,7 @@ function _l3AcceptedFixHtml(body) {
           `<span class="l3-retest-row ${r.status === "passed" ? "ok" : "bad"}">row ${r.index}</span>`).join("") +
         `</div>`
       : "") +
-    `<div class="l3-prop-hint">The session now coaches the FIXED temp.` +
+    `<div class="l3-prop-hint">The session now coaches the FIXED temp. ` +
     `Apply the same change in Digital to make it real.</div></div>`;
 }
 

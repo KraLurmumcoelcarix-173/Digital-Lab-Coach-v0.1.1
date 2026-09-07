@@ -835,3 +835,19 @@ def test_bug9_swapped_select_gate_is_fixed_by_replace_element():
     prompt = call.log[0]
     assert "SELECT-PATH suspect" in prompt and '"net_names"' in prompt
     assert "never changes over the whole testcase" in prompt
+
+
+def test_bug10_swapped_write_back_arms_are_fixed_by_swap_pins():
+    from dlc.parser.dig_parser import parse_dig_file
+    path = f"{_BENCH}/bug10_writeback_select_swapped/writeback_swapped.dig"
+    circ = parse_dig_file(path)
+    mux = next(i for i, c in enumerate(circ.components)
+               if c.element_name == "Multiplexer")
+    ops = [{"op": "swap_pins", "component_index": mux,
+            "pin_a": "in0", "pin_b": "in1"}]
+    call = _fake([_reply(ops, why="registers read back the other write-back arm")])
+    res = debugger.debug_circuit(path, call=call, use_manifest=False)
+    assert res["mode"] == "analysis" and res["llm_calls"] == 1
+    assert res["cards"][0]["verified"]["confirmed"] is True
+    prompt = call.log[0]
+    assert '"state_trace"' in prompt and "STATE TRACE" in prompt

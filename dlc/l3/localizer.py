@@ -215,23 +215,23 @@ def _wrong_bit_cone(circuit: Circuit, netlist: NetList, sel_net,
     return cone
 
 
-def witness_steer(circuit: Circuit, netlist: NetList, graph: nx.MultiDiGraph,
-                  sim: SimResult, out_idx: int, exp_val: int,
-                  width: int | None, *, net_names: dict | None = None,
-                  ) -> tuple[dict[int, tuple[float, str]], list[str]]:
+def _witness_from_root(circuit: Circuit, netlist: NetList,
+                       graph: nx.MultiDiGraph, sim: SimResult, root_idx: int,
+                       exclude_nid: int | None, exp_val: int,
+                       width: int | None, *, net_names: dict | None = None,
+                       row_tag: str = "",
+                       ) -> tuple[dict[int, tuple[float, str]], list[str]]:
     if (width is None or width < _MIN_WITNESS_BITS or exp_val is None
-            or out_idx not in graph):
+            or root_idx not in graph):
         return {}, []
     mask = (1 << width) - 1
     want = exp_val & mask
     if want < 8 or want == mask:
         return {}, []
-    out_net = _net_of_pin(netlist, out_idx, "in", "in")
-    out_nid = out_net.net_id if out_net is not None else None
-    cone = _static_cone(graph, out_idx)
+    cone = _static_cone(graph, root_idx)
     witnesses: list[tuple[int, int]] = []
     for nid, val in sim.net_values.items():
-        if nid == out_nid or val is None:
+        if nid == exclude_nid or val is None:
             continue
         if sim.net_bits.get(nid) != width or (val & mask) != want:
             continue
@@ -239,8 +239,7 @@ def witness_steer(circuit: Circuit, netlist: NetList, graph: nx.MultiDiGraph,
         drivers = [p.component_index for p in net.pins if p.direction == "out"]
         if not drivers or drivers[0] not in cone:
             continue
-        if circuit.components[drivers[0]].element_name in (
-                "Const", "Ground", "VDD", "In"):
+        if circuit.components[drivers[0]].element_name in ("Const", "Ground", "VDD"):
             continue
         witnesses.append((nid, drivers[0]))
     if not witnesses or len(witnesses) > _MAX_WITNESSES:
@@ -287,7 +286,7 @@ def witness_steer(circuit: Circuit, netlist: NetList, graph: nx.MultiDiGraph,
                 try:
                     steer = _wrong_bit_cone(circuit, netlist, sel_net,
                                             diff_bits, ancestors)
-                except Exception:
+                except Exception:  # noqa: BLE001
                     steer = None
             if steer is None:
                 steer = set(sel_preds)
@@ -295,8 +294,10 @@ def witness_steer(circuit: Circuit, netlist: NetList, graph: nx.MultiDiGraph,
                     steer |= ancestors(sp)
             steer.add(m)
             bits_txt = ", ".join(str(b) for b in diff_bits) or "?"
+            where = " at the row that wrote the register" if row_tag else ""
             reason = (f"SELECT-PATH suspect: on the logic behind sel bit "
-                      f"{bits_txt} of {comp.element_name}[{m}] (see notes)")
+                      f"{bits_txt} of {comp.element_name}[{m}]{where} "
+                      f"(see notes)")
             hops = _upstream_hops(graph, m, steer)
             for idx in steer:
                 w = round(_W_WITNESS - 0.1 * min(hops.get(idx, 8), 8), 2)
@@ -304,11 +305,22 @@ def witness_steer(circuit: Circuit, netlist: NetList, graph: nx.MultiDiGraph,
                 if prev is None or w > prev[0]:
                     boosted[idx] = (w, reason)
             notes.append(
-                f"SELECT-PATH: expected value found on net {name} (arm in{arm} "
-                f"of {comp.element_name}[{m}]) while the row selects arm "
-                f"in{sel_val} — the data is computed right; the logic behind "
-                f"sel bit {bits_txt} chooses the wrong arm.")
+                f"SELECT-PATH{row_tag}: expected value found on net {name} "
+                f"(arm in{arm} of {comp.element_name}[{m}]) while the row "
+                f"selects arm in{sel_val} — the data is computed right; the "
+                f"logic behind sel bit {bits_txt} chooses the wrong arm.")
     return boosted, notes
+
+
+def witness_steer(circuit: Circuit, netlist: NetList, graph: nx.MultiDiGraph,
+                  sim: SimResult, out_idx: int, exp_val: int,
+                  width: int | None, *, net_names: dict | None = None,
+                  ) -> tuple[dict[int, tuple[float, str]], list[str]]:
+    out_net = _net_of_pin(netlist, out_idx, "in", "in")
+    return _witness_from_root(
+        circuit, netlist, graph, sim, out_idx,
+        out_net.net_id if out_net is not None else None,
+        exp_val, width, net_names=net_names)
 
 def localize(
     circuit: Circuit,
@@ -324,6 +336,7 @@ def localize(
     expected_values: dict[str, tuple[int, int | None]] | None = None,
     stuck: dict[int, str] | None = None,
     net_names: dict[int, str] | None = None,
+    steer_extra: dict[int, tuple[float, str]] | None = None,
 ) -> SuspectReport:
     report = SuspectReport()
     failing = [o["label"] for o in outputs_report if o.get("ok") is not True]
@@ -356,6 +369,9 @@ def localize(
                 if idx not in steer or hit[0] > steer[idx][0]:
                     steer[idx] = hit
             report.notes.extend(w_notes)
+    for idx, hit in (steer_extra or {}).items():
+        if idx not in steer or hit[0] > steer[idx][0]:
+            steer[idx] = hit
 
     passing_union: set[int] = set()
     for label in passing:
