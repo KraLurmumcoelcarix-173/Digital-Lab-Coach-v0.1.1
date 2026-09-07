@@ -22,9 +22,7 @@ Three pieces:
    admin token only you hold that opens the admin dashboard.
 
 Prerequisites: all tests in your fork are green (`uv run pytest -q` —
-with `DIGITAL_JAR` set so the jar-gated tests run too), and your own
-Layer 3 replay set passes (`uv run python scripts/l3_replay.py
-<cases.json>`, see `docs/dev/test_notes.md`).
+with `DIGITAL_JAR` set so the jar-gated tests run too).
 
 ## 1. Build the zip and cut the GitHub release
 
@@ -167,7 +165,6 @@ untouched.
 ## 7. End-of-release checklist
 
 - [ ] Suite green (`uv run pytest -q`, with `DIGITAL_JAR` set) on the tagged commit.
-- [ ] Your local Layer 3 replay set passes (`scripts/l3_replay.py`).
 - [ ] Release published; download + `START_HERE` tested on a clean machine.
 - [ ] Proxy up with fresh tokens; `/v1/health` all-true; dashboard loads.
 - [ ] One end-to-end student flow through the proxy (keyless machine).

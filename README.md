@@ -221,15 +221,15 @@ Restart the server (or the proxy) after changing any of these.
 |---|---|
 | Daily caps, per-machine budgets, whole-class breaker | the three rows in [Changing the limits](#changing-the-limits) |
 | Course token / admin token | proxy env `DLC_COURSE_TOKEN`, `DLC_ADMIN_TOKEN` ([Rotating the course token](#rotating-the-course-token)) |
-| Where the proxy keeps its ledger | proxy env `DLC_PROXY_DB` (default `./dlc_proxy.db` — keep it out of git) |
+| Where the proxy keeps its ledger | proxy env `DLC_PROXY_DB` (default `./dlc_proxy.db`) |
 | Which model each Layer 3 mode uses | Settings ⚙ in the app (`l3_debug_model`, `l3_propose_model` in `~/.dlc/config.json`), or env `DLC_L3_DEBUG_MODEL` on the machine running the app |
 | LLM call timeout | env `DLC_LLM_TIMEOUT` (seconds, default 180) |
 | Lecture list Layer 2 cites | `SYLLABUS_311` in [`dlc/llm/explain.py`](dlc/llm/explain.py) ([Adapting the course syllabus](#adapting-the-course-syllabus-layer-2-lecture-tags)) |
-| Lab categories, subcircuit roles and formula models, program decode | one manifest per lab in [`data/manifests/`](data/manifests/) ([docs/MANIFEST_GUIDE.md](docs/MANIFEST_GUIDE.md)); env `DLC_MANIFEST_DIR` points at a folder outside the repo |
+| Lab categories, subcircuit roles and formula models, program decode | one manifest per lab in [`data/manifests/`](data/manifests/) ([docs/MANIFEST_GUIDE.md](docs/MANIFEST_GUIDE.md))|
 | Official tests | Settings ⚙ → Official tests (`~/.dlc/official_tests.json`), shipped defaults in `data/official_tests_defaults.json` |
 | The program a graded lab loads into an empty ROM | the `runtime` entry in `data/official_tests_defaults.json` ([docs/instructor_rom_config.md](docs/instructor_rom_config.md)) |
-| Solution circuits used to double-check coach proposals | env `DLC_REFERENCE_DIR` on YOUR machine only — solutions never ship; leave `reference_dir: null` in manifests |
-| The formula models themselves | [`dlc/sim/models.py`](dlc/sim/models.py) — one function per known subcircuit, each validated against the child's own testcase before use |
+| Solution circuits used to double-check mode B proposals if necessary| env `DLC_REFERENCE_DIR` on YOUR machine only; leave `reference_dir: null` in manifests |
+| The formula models themselves | [`dlc/sim/models.py`](dlc/sim/models.py) - one function per known subcircuit, each validated against the child's own testcase before use |
 | Digital.jar location | first-run dialog, Settings, or env `DIGITAL_JAR` |
 | Release version | `version` in `pyproject.toml` ([docs/RELEASE_GUIDE.md](docs/RELEASE_GUIDE.md)) |
 
@@ -239,8 +239,8 @@ Restart the server (or the proxy) after changing any of these.
 |---|---|
 | `dlc/parser/` | Reads `.dig` XML into structured Python objects: components, wires, nets, signal-flow graph.
 | `dlc/facts/` | Extracts a JSON-serializable bundle of facts the LLM and deterministic checkers consume: inventory, per-net widths, per-component topology, structural bug list.
-| `dlc/testing/` | Reads each Testcase's embedded test rows out of the `.dig`, parses Digital's CLI output, and pinpoints which specific rows fail — one fast `CLI test -verbose` call per file (with expected-vs-found cells per failing row), falling back to cumulative one-row-at-a-time runs when the fast mapping can't be trusted.
-| `dlc/analyzer/` | Deterministic checkers — wire completeness, bit widths, combinational loops, interface conformance, sequential timing. Shallow (top circuit) and deep (whole subcircuit tree) variants.
+| `dlc/testing/` | Reads each Testcase's embedded test rows out of the `.dig`, parses Digital's CLI output, and pinpoints which specific rows fail - one fast `CLI test -verbose` call per file (with expected-vs-found cells per failing row), falling back to cumulative one-row-at-a-time runs when the fast mapping can't be trusted.
+| `dlc/analyzer/` | Deterministic checkers - wire completeness, bit widths, combinational loops, interface conformance, sequential timing. Shallow (top circuit) and deep (whole subcircuit tree) variants.
 | `dlc/sim/` | Deterministic value evaluator (`simulator.py`) that computes the value on every net for a test row, with register state for clocked designs and recursive subcircuit evaluation; `models.py` holds the formula models Layer 3 substitutes for passing subcircuits. Powers the signal-flow-on-row-click UI and the subcircuit drill-in.
 | `dlc/web/` | FastAPI server (`server.py`) + browser front-end (`static/`) for the web app: interactive graph, structural-issue overlay, per-row test runner, signal-flow-on-row-click, subcircuit drill-in, and the Layer 2/3 coach.
 | `dlc/l3/` | Layer 3: Mode A debugger (evidence, clustering, hypothesis verification) and Mode B coverage coach (manifests, program coach, row injection).
@@ -248,14 +248,14 @@ Restart the server (or the proxy) after changing any of these.
 | `dlc/telemetry/` | Anonymous machine identity, per-interaction logging to a local SQLite spool, and the shipper that syncs it to the course proxy.
 | `proxy/` | The course proxy server an instructor deploys: API-key custody, per-machine daily limits (re-download-proof), global daily circuit breaker, telemetry ingest, admin dashboard/summary/export.
 | `dlc/cli/` | Command-line entrypoint that wires the layers together.
-| `prompts/` | Versioned LLM prompt templates — one file per prompt variant, consumed by `dlc/llm/`.
+| `prompts/` | Versioned LLM prompt templates - one file per prompt variant, consumed by `dlc/llm/`.
 | `data/manifests/` | One manifest per lab (`cpu.json`, `cpu_new.json`, …): categories, subcircuit roles and models, program decode.
-| `data/sample_circuits/` | Test fixtures — public sample circuits and buggy circuits created by the authors. No course answer circuits live in this repository.
+| `data/sample_circuits/` | Test fixtures - public sample circuits and buggy circuits created by the authors. No course answer circuits live in this repository.
 | `docs/` | Instructor guides (manifest, ROM payload, release runbook) and screenshots; `docs/dev/` holds developer notes (file-format lore, the Layer 3 contract, manual test snippets, function plan).
 | `tests/` | pytest unit tests, one file per source module.
 | `START_HERE.bat` / `start.sh` | One-click student launchers
 | `UNINSTALL.bat` / `uninstall.sh` | Removes DLC and the local `~/.dlc` data folder.
-| `scripts/` | Maintainer utilities — `make_release_zip.py` builds the student release zip.
+| `scripts/` | Maintainer utilities - `make_release_zip.py` builds the student release zip.
 
 ## Developer setup
 
@@ -310,11 +310,6 @@ uv run python -m dlc.web.server
  3. PowerShell doesn't always parse multi-line `python -c "..."` blocks
     cleanly. For the manual snippets in `docs/dev/test_notes.md`, use Git
     Bash, or save the script to a `.py` file and run `uv run python script.py`.
-
- 4. After applying any DLC update, replay your own Layer 3 cases before
-    trusting it in class: `uv run python scripts/l3_replay.py <cases.json>`
-    re-runs recorded Mode A analyses with the jar and no LLM cost (see
-    `docs/dev/test_notes.md`, "Layer 3 replay").
 
 ## Troubleshooting (Windows): `uv run` blocked by Smart App Control
 

@@ -1,6 +1,6 @@
 # Digital Notes
 
-Last updated: 2026/8/16
+Last updated: 2026/9/6
 
 ---
 
@@ -175,14 +175,14 @@ The ablation contrast (Layer 1 alone vs Layer 1+3 vs Layer 3 alone) is the proje
 DLC's parser aims to **semantically understand** elements used in COMP 311 labs so far. Other elements (FPGA-specific blocks, FSM editor outputs, etc.) are parsed structurally but treated as opaque `UnknownComponent` with named pins for now. This lets the analyzer skip unrecognized components and the LLM describe them generically, while keeping the parser future-proof for new labs.
 
 **Known-and-semantically-supported**:
-Wire (straight, L, diagonal), And, Or, XOr, NAnd, NOr, XNOr, Not, In, Out, Multiplexer, Demultiplexer, Splitter, Tunnel, ROM, Register, RegisterFile, Const, Comparator (incl. `Signed`), Add, BitExtender, Clock, Ground, VDD, BarrelShifter, Decoder, PriorityEncoder, Testcase, Rectangle, Text, Seven-Seg, and the tier-2.5 switch-level elements NFET, PFET, PullUp, PullDown (r56–r58: switch-net rendering, strong/weak drive resolution, switch-level simulation; Layer 3 refuses transistor labs by design).
+Wire (straight, L, diagonal), And, Or, XOr, NAnd, NOr, XNOr, Not, In, Out, Multiplexer, Demultiplexer, Splitter, Tunnel, ROM, Register, RegisterFile, Const, Comparator (incl. `Signed`), Add, BitExtender, Clock, Ground, VDD, BarrelShifter, Decoder, PriorityEncoder, Testcase, Rectangle, Text, Seven-Seg, and the tier-2.5 switch-level elements NFET, PFET, PullUp, PullDown.
 
 **Annotation-only** (parsed but explicitly carry no signal pins): Testcase, Rectangle, Text. Excluded from implicit-pin candidate set.
 
 **Out of initial scope** (parsed but opaque, may be added later):
 FSM elements, FPGA-board-specific blocks, Verilog wrappers, GAL/JEDEC-specific elements, RAM.
 
-## CLI Mode (what the autograder uses)
+## CLI Mode (what the UNC autograder uses)
 
 - Command: `java -cp Digital.jar CLI test -circ FILE.dig [-verbose]`
 - Output format: `Test: passed` or `Test: failed (N%)` per test case
@@ -243,7 +243,7 @@ verified empirically:
   below applies only to UNRESOLVED children (missing files).
 - **Subcircuit instance pin direction resolution** (unresolved children only): the instance has no native geometry, so direction is inferred by splitting the instance's implicit pins at the x-midpoint (left = inputs, right = outputs), sorting each side by y, and zipping against the child circuit's `In`/`Out` elements sorted by y. Implicit-pin count is capped to the child's port count to prevent over-claim from neighboring routing.
 
-## L1 regression ground truths (SVG-probed on real labs jar-verified)
+## L1 regression ground truths
 
 - **PriorityEncoder has TWO outputs**: `num` at (80, 0) and `f` — the
   1-bit "any input set" flag — at (80, 20). Students wire `f` as the
@@ -266,7 +266,7 @@ verified empirically:
   order** (re-confirmed: the answer alu declares FlagZ before Result in
   the file but places Result above FlagZ on canvas; Digital renders
   FlagZ on the top row).
-- **Multi-driver tolerances (r34, jar-probed)**: Digital's short-circuit
+- **Multi-driver tolerances**: Digital's short-circuit
   check fires at RUN time on value conflict, so three same-net driver
   mixes run cleanly and are WARNINGS, not errors: (1) one real output +
   agreeing constants; (2) several SAME-valued constants tied by one
@@ -275,14 +275,14 @@ verified empirically:
   win. An In that IS a testcase column, an In in a file with no
   testcase (interactive mode drives every In), two real outputs, or
   constants with different values all stay hard errors.
-- **Mode A debugs the injected run (r34)**: when the file's testcase is
+- **Mode A debugs the injected run**: when the file's testcase is
   missing/modified and an official set exists, /api/llm/debug builds the
   same sibling injected temp the Dashboard runs use and debugs THAT —
   otherwise a header-only testcase yields zero failing rows and the
   board wrongly says "every row passes". Accept-Fix temps built from the
   raw file get the official rows written in place; temps descending
   from Mode B keep their coach-added rows untouched.
-- **Gradescope-style injection (r31 policy)**: when a filename has an
+- **Gradescope-style injection**: when a filename has an
   official test set registered (data/official_tests_defaults.json or a
   Settings entry) and the file's own testcase does not MATCH it
   (missing, header-only, or modified — normalized-content hash), test
@@ -295,7 +295,7 @@ verified empirically:
   Mode B remains the test-expansion teacher on top of always-official
   test runs.
 
-- **Duplicated identical gates tied together demote to WARNING (r37)**:
+- **Duplicated identical gates tied together demote to WARNING**:
   jar-probed — two And gates with the same inputs driving one tunnel
   net run fine (they always agree), while And+Or on the same inputs
   short-circuit at run time. `_check_multi_drivers` demotes only when
@@ -304,13 +304,13 @@ verified empirically:
   (`_identical_gate_signature`); anything else stays a hard error.
   Field source: a real Lab-2 SOP decoder rebuilding product terms per
   segment block under one tunnel name.
-- **PriorityEncoder drives `f` in the evaluator (r37)**: Digital's PE
+- **PriorityEncoder drives `f` in the evaluator**: Digital's PE
   has `num` + a 1-bit `f` "any input set" flag. The evaluator only
   produced `num`, so a ROM whose chip-select hangs off `f` never
   evaluated and the whole output stage read undefined — while the jar
   ran it fine (empty ROM words read 0). Both fixed: `f` is emitted and
   empty ROMs read 0, so evaluator mismatch cells now match Digital's.
-- **Mode A runaway firewalls (r37)**: (1) children failing their
+- **Mode A runaway firewalls**: (1) children failing their
   OFFICIAL tests (injected when missing/modified) gate the parent into
   the free suggestion branch — the s008 cpu routes straight to
   control-unit.dig, 0 model calls; (2) a jar per-row run where EVERY
@@ -322,7 +322,7 @@ verified empirically:
   `stopped_early`, and ships the best unverified idea (the benchmark's
   best-solution hard trigger); (4) `timings` in the analysis payload
   records per-call and per-verify seconds.
-- **Frozen-trunk exception to the lazy bars (r37)**: when the failing
+- **Frozen-trunk exception to the lazy bars**: when the failing
   rows are fully explained by "every output frozen at one constant"
   (constant found per column, never-mismatching outputs carry one
   constant expected, passing rows consistent), the scattered flag and
@@ -330,7 +330,7 @@ verified empirically:
   a partial fix gets refuted instead of shipping as a per-row card.
   Convicted on s008's empty decode ROM (8/8 rows, stuck at 0). Rows
   failing in differing column sets keep every ratified bar.
-- **ROM-data steer only fires on stored words (r37)**: the r27
+- **ROM-data steer only fires on stored words**: the
   "do NOT propose another Data change" escalation steer presumes the
   stored words satisfy the passing rows; on an EMPTY ROM the missing
   words ARE the bug, so the steer is suppressed and suspect attrs
@@ -342,11 +342,10 @@ verified empirically:
   and Digital rejects a `Splitting` entry silently — the box renders
   with its default 8-bit output. Bit-group syntax `1,1,1,1` verified;
   `1*4` also parses in Digital but our probe used the explicit form.
-- **Mode A daily cap is 1 (r37)** — a booked use requires a delivered
+- **Mode A daily cap is 1** — a booked use requires a delivered
   verified card, and the stop condition bounds one run's spend, so a
   single daily analysis is a full analysis.
-- **Control-unit files skip the lazy gate (r37.1, TEMPORARY instructor
-  ruling — revisit on request)**: any file whose real name normalizes
+- **Control-unit files skip the lazy gate**: any file whose real name normalizes
   to control-unit (`control-unit.dig`, `controlunit.dig`, injected
   temps included) bypasses gross_check entirely and goes straight to
   analysis when rows fail (`_lazy_exempt_name` /
@@ -507,53 +506,33 @@ verified empirically:
   l3_modeB_result_server, l3_accept_fix_server — authoritative rows
   (mode, cards, tokens, consumed) next to the FE click events.
 
-## r61–r64 lore (CPU-lab rounds)
+## CPU-lab
 
-- **Signed comparators** (r62): the evaluator's `Comparator` rule applies
+- **Signed comparators**: the evaluator's `Comparator` rule applies
   two's complement at `Bits` when `Signed` is set. Before that, a
   signed branch unit's `blt`/`bge` rows inverted and the Layer 1 overlay
   of a full CPU drifted into a parallel execution from the first signed
   branch on — while the jar verdicts (correct) said "passed".
-- **Formula models** (r63, `dlc/sim/models.py`): Layer 3 Mode A replaces
+- **Formula models**: Layer 3 Mode A replaces
   a passing child by the function it computes (ALU, control decode table,
   register file and data memory with state, imm-gen, branch unit, the
   Lab 3 sub-units) — only after the model reproduces every row of the
   child's own testcase, or when the manifest's `subcircuits` block vouches
   for it. Layer 1 never uses models. Evidence stage on the RV32I CPU:
   40 s → 0.3 s.
-- **Single-pass replay** (r63, `RowReplay`): a testcase is replayed once,
+- **Single-pass replay**: a testcase is replayed once,
   keeping register state between rows; `/api/simulate` caches the replay
-  per file content, so a tick costs one row (33 ms on the CPU) instead of
+  per file content, so a tick costs one row instead of
   a restart from row 0.
-- **RV32I program coach** (r64): `program_decode` drives a small
+- **RV32I program coach**: `program_decode` drives a small
   interpreter that follows branches/jumps and keeps data memory;
   `encode_category_word` knows all formats; a program that parks in a
   `jal x0, 0` halt loop gets its extension spliced in FRONT of the loop
   (`insert_at`), with the halt rows' PC shifted (`observe.pc_port`).
-  Manifest attachment picks the manifest covering most uploaded files
-  (Lab 5 and the RV32I lab share `alu.dig` / `register-file.dig`).
-- **Two ALUs, one interface** (r64b): `lab5_alu` (shifts B by A[5:0], no
+  Manifest attachment picks the manifest covering most uploaded files.
+- **Two ALUs, one interface**: `lab5_alu` (shifts B by A[5:0], no
   SLTU) and `rv32i_alu` (shifts A by B[4:0]) are told apart by each
   file's own testcase.
-- **The gate-swap ALU** (r65): an RV32I ALU whose `isShiftGroup` was
-  built with an And instead of an Or (SLL/SRL rows return A+B) ran
-  through Mode A without a crash, yet the localizer's top-12 never held
-  the culprit — forty decode parts (comparators, constants, Or gates)
-  tied at the same score and the cap kept the LOWEST component indices,
-  so the And (the file's last component) was the first one dropped; the
-  payload also showed nets only as numbers. Fixes: (1) `witness_steer` —
-  the expected value already present on another mux arm marks the mux
-  and the logic behind the wrong `sel` bit(s) as SELECT-PATH suspects;
-  (2) `stuck_components` — outputs frozen across the whole replayed
-  testcase while inputs vary; (3) `cluster.net_names` + per-pin `net`
-  names; (4) the prompt's reading guide names both signals. Repo guard:
-  `bug9_swapped_select_gate` (own design) in the benchmark, the
-  localizer/evidence/debugger tests and the replay set. General lesson:
-  a Mode A run "works" only if the culprit is IN the evidence — check
-  the suspect list on every new failure pattern, not just the verdict.
-- **BitExtender is 60 wide** (r65, SVG-probed): in (0,0), out (60,0);
-  the table said (80,0) and a correctly wired output survived only via
-  endpoint snapping.
 
 ## Known limitations to revisit
 

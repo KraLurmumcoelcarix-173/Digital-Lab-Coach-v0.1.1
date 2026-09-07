@@ -46,7 +46,7 @@
 | F18 | Ablation condition controller | Done |
 | F19 | Telemetry logger & Proxy Server | Done — local SQLite spool + shipper (`dlc/telemetry/`), course proxy with key custody, machine-keyed budgets, breaker and admin dashboard (`proxy/`) |
 | F20 | Digital source-code dig (Path-3 plugin viability) | Waived |
-| F21 | Evaluation harness | L2 benchmark harness and the L1/L3 bug-benchmark ablation harness done; Layer 3 record/replay runner (`scripts/l3_replay.py`) for regression-checking optimizations against previously solved cases |
+| F21 | Evaluation harness | L2 benchmark harness and the L1/L3 bug-benchmark ablation harness done; Layer 3 quality is tracked by hand on the L3 benchmark sheet (live Mode A runs per release) |
 | F22 | CLI interface | Done (`dlc/cli/`) |
 | F23 | Formula models for passing subcircuits (Layer 3 speed) | Done — `dlc/sim/models.py`, validated per child against its own testcase |
 | F24 | RV32I program coach (37 instructions, halt-loop-aware extensions) | Done — `dlc/l3/manifest.py`, `data/manifests/cpu_new.json` |

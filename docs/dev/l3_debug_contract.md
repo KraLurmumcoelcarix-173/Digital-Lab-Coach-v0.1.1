@@ -1,79 +1,132 @@
-# L3 `/api/llm/debug` — frozen sub-agent I/O contract (`l3.debug.v1.1`)
+# L3 `/api/llm/debug` — Mode A model-call I/O contract (`l3.debug.v1.1`)
 
-Status: FROZEN 2026-07-06; ops vocabulary ratified 2026-07-06. Revised to
-v1.1 2026-07-31 with the ratified Layer 3 phase board: the two-level
-progressive-disclosure ladder (hint → fix) replaces the flat hypothesis
-output (§4/§6), the gross-checks and cluster signature are named
-concretely (§2), and the telemetry list gains the ladder events (§8).
-Changes bump the version string; agents and executor validate against it.
+The contract string `l3.debug.v1.1` is stamped on every evidence payload
+and required in every model reply: `validate_hypothesis` rejects a reply
+whose `contract` differs. Any change to the payload shape (§3), the reply
+shape (§4) or the ops vocabulary bumps the string. Everything below is the
+behavior of the code as it stands:
 
-This contract carries the REAL deterministic shapes that already exist in the
-codebase — `/api/simulate`'s payload, the localizer's `SuspectReport`, the
-patch applier's 8 ops — plus the `animation_script[]` schema, which is an
-AGENT OUTPUT, never an input.
+| Part | Lives in |
+|---|---|
+| Route, target selection, limits, accept/retest | `dlc/web/l3_routes.py` |
+| Coordinator (gates, model calls, verify, cards) | `dlc/l3/debugger.py` |
+| Evidence: replay, gross checks, clustering, payload | `dlc/l3/evidence.py` |
+| Fault localizer (suspect ranking) | `dlc/l3/localizer.py` |
+| Patch applier and re-run | `dlc/l3/patch.py` |
+| Formula models for passing subcircuits | `dlc/sim/models.py` |
+| Prompt | `prompts/l3_modeA_hypothesis_v1.txt` |
+| Daily caps | `dlc/l3/limits.py` |
+| Client boards and ladder | `dlc/web/static/l3.js` |
 
 ---
 
 ## 1. Endpoint + scope
 
-`POST /api/llm/debug` — Mode A coordinator. Explicit trigger only.
+`POST /api/llm/debug` — Mode A coordinator. Explicit trigger only (the
+"Analyze failing rows" button).
 
 Request (client → server):
 
 ```json
-{"session_id": "...", "filename": "cpu.dig", "spec_index": 0}
+{"session_id": "...", "filename": "cpu.dig", "spec_index": 0, "model": null}
 ```
 
-Scope (ratified): Mode A debugs the SELECTED file's own testcase; when Mode B
-injected rows this session, the coordinator targets the CURRENT TEMP CIRCUIT
-(original + finally-injected rows). The circuit cannot be switched inside L3.
+`model` is optional (the board's model picker). When absent the server
+uses, in order: env `DLC_L3_DEBUG_MODEL`, `l3_debug_model` in
+`~/.dlc/config.json`, the built-in default. Calls go through
+`dlc/llm/client.call_llm`, so a configured course proxy relays them.
+
+Scope: Mode A debugs the selected file's own testcase (`spec_index`, one
+testcase per run). When this session has a coach temp for the file
+(`session["l3_temp"].for == filename` — created by Mode B's Accept or by
+Accept fix, §7), the run targets that temp instead: original circuit plus
+the accepted rows, plus any earlier accepted fix. When the file's testcase
+is missing, header-only or modified and an official test set exists for
+the filename, the run targets a sibling injected temp carrying the
+official rows (`dlc/testing/inject.prepare_injected_run`); ROM contents
+are never injected except the course program into an EMPTY program ROM
+(`rom_injected`). The circuit cannot be switched inside Layer 3.
 
 ## 2. Coordinator pipeline (deterministic, server-side)
 
-1. Gate: any deep-L1 issue → both boards locked (never reaches here).
-2. Per-row run (fast Mode C when Digital.jar is configured; the Python
-   evaluator's expected-vs-found sweep otherwise) → failing rows. All pass
-   → no-op response (`mode:"clear"`). A gross-check trips → `mode:"lazy"`
-   (suggestion-only branch; consumes 0 daily uses).
+Gates before any evidence, in order:
 
-   **The lazy gate (v0.1.0 ratified, `dlc/l3/evidence.py`). Mode A starts
-   IFF: no Layer-1 issue + per-row run done + not lazy.** The focus and
-   rate checks apply only to >30-component trees — a ≤30-component
-   circuit is always analyzable (close-to-answer students get help, not
-   rejection). Checks in order:
-   1. FOCUS REQUISITE — "≤3 mismatch columns is a REQUISITE, not an
-      amnesty": failing rows wrong in ≥4 output columns AT ONCE must
-      stay under 25% of the testcase's well-formed rows
-      (`SCATTERED_ROW_MAX_SHARE`), else `scattered_failures` → lazy
-      REGARDLESS of pass rate. A rare scattered row among focused
-      failures passes — it usually shares their root cause.
-   2. STRUCTURAL — `unbound_columns` (testcase columns matching no
-      In/Out/Clock label); `missing_clocked_logic` (the testcase drives
-      a clock but the tree holds no state element); a subcircuit failing
-      its OWN tests routes to fix-the-child-first (coordinator).
-   3. PASS-RATE BARS, checked LAST (no focus amnesty): >10 rows → lazy
-      when >10 failing AND <80% passing; 6–10 rows → <60%; 1–5 rows →
-      <30%.
-   Re-analyses automatically target the coach temp when Mode B rows were
-   accepted. The result freezes after delivery and refreshes on
-   re-upload/discard.
-3. CLUSTER failing rows by signature (Phase 0.5, ratified): the tuple of
-   (mismatched output columns, exercised opcode/select values read from the
-   row's inputs — plus the manifest-decoded program CATEGORY of the word on
-   the program ROM's output net for program-driven labs (v1.1), overlap of
-   top localizer suspects). Cap: 4 clusters; one sub-agent per cluster —
-   never one per row; overflow clusters FOLD into their nearest neighbor,
-   never dropped.
-4. Evidence per cluster: `/api/simulate` result for ≤ 2 REPRESENTATIVE rows
-   (full per-net values), compact expected-vs-found for the rest;
-   `localize()` per row, `merge_reports()` per cluster.
+1. **Client lock.** The Layer 3 boards are locked while the file has any
+   Layer-1 error; the Analyze button is enabled only after a per-row test
+   run on the Dashboard reported at least one failing row (or the coach
+   temp has failing accepted rows).
+2. **Transistor guard.** A tree containing switch-level elements returns
+   `{"ok": false, "unsupported": true, "mode": "unsupported", "cards": []}`.
+3. **Daily cap.** `limits.allowed("modeA")` — only enforced when
+   `DLC_ENFORCE_LIMITS` is on (§10); otherwise `{"ok": false,
+   "limited": true, "warning": ..., "limits": ...}`.
+4. **Parse + testcase pick.** Unparsable file, no testcase or a bad
+   `spec_index` → `mode: "error"` with a `warning`.
+5. **Manifest attachment.** The manifest whose `applies_to` covers the most
+   uploaded filenames (top file plus referenced children) wins; ties keep
+   file order; an element-hook manifest is the fallback.
+6. **Failing children.** Every subcircuit runs its own testcase (its
+   official set when one is registered for its filename) through the
+   evaluator. Any failing row → `mode: "lazy"` with a
+   `subcircuit_failing` / `subcircuit_failing_official` flag: fix the
+   child first.
+7. **Per-row verdicts.** With a Digital.jar configured, `per_row_run_auto`
+   (the fast runner, then the per-row runner) gives the failing rows and
+   their mismatched cells; `row_verdict_runner: "digital"`. Every row
+   erroring means Digital refused the build → `mode: "lazy"` with
+   `build_refused`, or `unbound_columns` when testcase columns match no
+   In/Out/Clock label. Without a jar the Python evaluator judges the rows
+   (`"evaluator"`).
 
-## 3. Sub-agent INPUT (one call per cluster)
+Evidence stage (`assemble_evidence`):
+
+8. **Formula models.** Each passing subcircuit is replaced by the function
+   it computes when a model fits its interface and reproduces every row of
+   the child's own testcase, or when the manifest's `subcircuits` block
+   vouches for it by name. The notes list the substitutions
+   (`subcircuits evaluated as formula models: alu.dig → rv32i_alu, …`) and
+   why a child stayed gate-level. Layer 1 never uses models.
+9. **One replay of the whole testcase** (`simulate_rows`, register state
+   carried between rows). It yields every failing row's net values and,
+   across all rows, the components whose output never changes (§3).
+10. **Gross checks** (`gross_check`). Skipped entirely for control-unit
+    files (`controlunit.dig` / `control-unit.dig` and their injected temps,
+    matched case- and punctuation-insensitively); the refusal guards above
+    still apply to them. Checked in order:
+    - `scattered_failures` — only for trees with more than 30 components
+      and no frozen trunk: rows wrong in 4 or more output columns at once
+      reach 25% of the testcase's well-formed rows.
+    - `unbound_columns`; `missing_clocked_logic` (the testcase steps a
+      clock but the tree holds no state element).
+    - Pass-rate bars, only for trees with more than 30 components and no
+      frozen trunk: 11 or more rows → `too_many_failures` when more than
+      20 rows fail AND under 20% pass; 6–10 rows → `low_pass_rate` under
+      60% passing; 1–5 rows → under 30%.
+    Any flag → `mode: "lazy"`, no model call, no daily use consumed. A
+    tree of 30 components or fewer is always analyzable.
+11. **Clustering** (`cluster_rows`). Bucket key = (mismatched output
+    columns, values of the select columns — inputs that drive a mux
+    `sel` or are named like op/opcode/sel/mode/ctrl/aluop/funct —, the
+    manifest-decoded instruction category of the word on the program
+    ROM's output net). Rows with the same key join a cluster when the
+    Jaccard overlap of their top-5 suspects is at least 0.5. Cap 4
+    clusters; the smallest overflow cluster folds into the neighbor with
+    the highest suspect overlap, never dropped. Frozen trunk — every
+    failing row shows the same wrong value per column while the passing
+    rows expect one constant — makes a single cluster so a fix must repair
+    every row.
+12. **Per-cluster evidence**: full net values for the first 2 rows of the
+    cluster, compact expected-vs-found for the rest, `localize()` per row,
+    `merge_reports()` per cluster, one payload per cluster.
+
+## 3. Model INPUT — the evidence payload (one call per cluster)
 
 ```json
 {
   "contract": "l3.debug.v1.1",
-  "circuit": { "compact CircuitFacts": "inventory, io, subcircuits, selectors" },
+  "circuit": { "inventory": {}, "inputs": [], "outputs": [], "subcircuits": [],
+               "has_clock": false, "has_register": false, "has_rom": false,
+               "roms": [], "testcases": [], "inverted_inputs": [], "selectors": [] },
   "testcase": { "name": "...", "headers": ["A", "B", "..."] },
   "cluster": {
     "rows": [
@@ -85,36 +138,88 @@ injected rows this session, the coordinator targets the CURRENT TEMP CIRCUIT
         "net_values": { "10": {"value": 0, "bits": 4, "hex": "0"} },
         "unresolved_nets": [9],
         "outputs": [ {"label": "Result", "expected": "15", "found": "0x0", "ok": false} ] }
-    ]
+    ],
+    "net_names": { "10": "isShiftGroup", "12": "ALUOp" }
   },
-  "suspects": { "SuspectReport.to_dict()": "failing/passing outputs + ranked suspects with reasons" },
+  "suspects": { "failing_outputs": [], "passing_outputs": [],
+                "suspects": [ { "component_index": 159, "element_name": "And",
+                                "display_name": "And[159]", "score": 7.1,
+                                "reasons": ["..."], "in_failing_cones": [],
+                                "in_active_cones": [], "feeds_passing_output": true,
+                                "drives_unresolved": false, "is_subcircuit": false,
+                                "child_reference": null, "child_self_test": null } ],
+                "notes": [] },
   "suspect_wiring": [
     { "component_index": 16, "element": "Const", "label": null,
-      "pins": [ { "pin": "out", "direction": "out", "net_id": 7,
-                  "connects_to": [ {"component_index": 5, "element": "Add", "pin": "c_i", "direction": "in"} ] } ] }
+      "attrs": { "Value": 1, "Bits": 1 },
+      "pins": [ { "pin": "out", "direction": "out", "net_id": 7, "net": "cin",
+                  "connects_to": [ {"component_index": 5, "element": "Add",
+                                    "label": null, "pin": "c_i", "direction": "in"} ],
+                  "values": { "6": 1 } } ] }
   ]
 }
 ```
 
-`suspect_wiring` (v1.1) is the pin-level connection truth for every ranked
-suspect — the netlist's far ends per pin, tunnels resolved — so the agent
-can tell WHICH of several identical components drives the suspicious pin
-instead of guessing among look-alikes. Each pin also carries `values`
-({row_index: value} on the representative rows): the wiring↔net_values
-join done FOR the model, so same-scored suspects separate by behavior
-(a gate whose output contradicts its element kind is the prime candidate).
+- `circuit` is the compact CircuitFacts view Layer 2 also uses.
+- `cluster.net_names` maps net ids to the student's own names (tunnel
+  NetName, else the label of an In/Out/Clock on the net) for the nets in
+  `representative_evidence`. The same name appears as `net` on every
+  `suspect_wiring` pin entry.
+- `suspects` is the merged localizer report. Per row, every component in
+  the static cone of a failing output is scored: on the row's ACTIVE path
+  (mux arms actually selected) +3.0, plus +1.0 per additional failing
+  output it is active for; merely upstream +1.0; also feeding a passing
+  output −1.0; driving a net the evaluator left unresolved +1.5;
+  Multiplexer / Decoder / Splitter +0.5. Two signals from the replay:
+  *select-path* — the failing output's expected value already sits on
+  another net of its cone and a multiplexer fed by that net selected a
+  different arm: the mux and the logic behind its `sel` (only the
+  differing sel bits when `sel` is a bus joined by a Splitter) get
+  `SELECT-PATH suspect: …`, +2.5 fading by 0.1 per hop from the mux; it
+  is skipped for 1-bit outputs, values below 8 or all-ones, values seen
+  on more than 3 nets, and constants or raw inputs as witnesses.
+  *Frozen output* — every output net of a component keeps one value over
+  the whole testcase (at least 6 rows) while an input varies: `its output
+  never changes over the whole testcase …`, +2.0 (storage elements and
+  subcircuit instances excluded). In, Clock, Tunnel, Testcase and
+  Rectangle are never suspects. Each row keeps its top 12; the merge
+  averages scores, adds the share of rows a suspect appears on (with the
+  reason `suspected on all N rows of the cluster`) and keeps 12.
+- `suspect_wiring` covers every ranked suspect plus every storage element
+  (ROM, RAM, EEPROM, RAMDualPort, LookUpTable) whether suspected or not:
+  each pin's net, far ends (up to 6, tunnels resolved) and its value on
+  the representative rows. `attrs` carries the fix-relevant attributes
+  (Bits, Value, Selector Bits, splitting ranges, inputBits/outputBits,
+  Signed, …). Storage records add `data_words_stored`, either a
+  `data_note` (empty Data, with the exact op to program it) or
+  `stored_words` (32 words or fewer, hidden when the run used the
+  injected course program), `address_by_row`, `address_input_drivers`,
+  `output_bit_map` and `expected_outputs_by_row`.
+- A payload over 250,000 characters is slimmed to the nets that appear in
+  `suspect_wiring`; the run notes say so.
 
-The agent reasons ONLY over these verified facts and is SINGLE-SHOT
-(v1.1, ratified): no tools, no iteration, no nested fetches — one format
-re-prompt when the reply is not the strict JSON object, one refutation
-retry when the verifier refutes the fix. It never invents nets, widths,
-or values.
+The prompt is `prompts/l3_modeA_hypothesis_v1.txt` with `<<PAYLOAD_JSON>>`
+replaced. Appended blocks: `[ROM NOTE]` when the course program was
+injected into an empty ROM; `[PROGRAM MEMORY]` when the file's
+program-memory ROM holds the student's own program and the official store
+has a runtime program for that filename (Data changes on it are stripped
+before verification); `# FORMAT RETRY` after a reply that is not the
+strict JSON object (once); `[REFUTED ATTEMPT]` after a refuted fix (once
+per cluster) with the re-run's still-failing and regressed rows, a
+partial-fix steer when the refuted ops repaired some cluster rows, and a
+stored-data steer when a Data rewrite was refuted; `[ESCALATION]` on the
+final attempt (§5). Every call is one plain completion: no tools, no
+iteration; the model reasons only over the payload and never invents
+nets, widths or values.
+Output budget by model tier: 3000 tokens, 8000 for premium models, 16000
+for reasoning models (called with low effort).
 
-## 4. Sub-agent OUTPUT (frozen shape — v1.1: the two-level ladder)
+## 4. Model OUTPUT — the hypothesis reply
 
-ONE call returns BOTH ladder levels: disclosure: at hint_level 1 the UI shows only `hint`; hint_level 2
-("show me more") reveals `fix`. The split IS the spoiler guard's structural half — the F13
-wording rules bind `hint.*` (must not state the concrete repair) and `fix.explanation_for_student` (teaches, never taunts).
+One call returns both ladder levels: the client shows only `hint` at
+level 1 and reveals `fix` at level 2 on the student's "Show me more".
+`hint.*` must not state the concrete repair; `fix.explanation_for_student`
+teaches.
 
 ```json
 {
@@ -141,139 +246,191 @@ wording rules bind `hint.*` (must not state the concrete repair) and `fix.explan
 }
 ```
 
-`fix.ops` uses EXACTLY the ratified 8-op vocabulary of `dlc/l3/patch.py`:
-`change_attribute · replace_element · swap_pins · rewire_pin · add_wire ·
-delete_wire · add_component · delete_component` (indices reference the
-ORIGINAL circuit; deletes apply last; new components wire via add_wire).
+Validation (`validate_hypothesis`; failure triggers the one format
+retry, then the cluster is dropped as `invalid_response`): the reply is
+the JSON object between the first `{` and the last `}` of the text;
+`contract` must match;
+`hint.suspect_region` is required; `fix.ops` holds 1 to 6 ops, each from
+the vocabulary below with its required fields present; `confidence` is
+clamped to 0..1 (default 0.5); `suspect_signals` keeps at most 8 entries;
+all text is sanitized.
 
-### animation_script ops (v1)
+`fix.ops` vocabulary (`dlc/l3/patch.py`; `component_index` refers to the
+ORIGINAL circuit; deletes apply last, highest index first; a component
+added in the same patch is wired with `add_wire`, pin-level ops cannot
+target it):
+
+| op | required fields |
+|---|---|
+| `change_attribute` | `component_index`, `name`, `value` |
+| `replace_element` | `component_index`, `new_element` |
+| `swap_pins` | `component_index`, `pin_a`, `pin_b` |
+| `rewire_pin` | `component_index`, `pin`, `to` (`{component_index, pin}`) |
+| `add_wire` / `delete_wire` | `p1`, `p2` |
+| `add_component` | `element_name`, `position` (+ optional `attributes`) |
+| `delete_component` | `component_index` |
+
+### animation_script acts
 
 | act | fields | plays as |
 |---|---|---|
 | `diagnose_line` | `text` | one line typed onto the red diagnosis board |
-| `focus` | `component_index`, `path` | magical mouse moves to the component (`path` = component indices from the top circuit down to the enclosing subcircuit instance; `[]` = top level) |
-| `drill` | `path` | opens the drill-in overlay at that subcircuit (reuses the L1 drill-in) |
+| `focus` | `component_index`, `path` | the pointer moves to the component (`path` = component indices from the top circuit down to the enclosing subcircuit instance; `[]` = top level) |
+| `drill` | `path` (non-empty) | opens the drill-in overlay at that subcircuit |
 | `drill_back` | — | one level up |
-| `mark_fix` | `target` (`{component_index, path}` or `{net_id, path}`), `label` | yellow component / yellow wire + "what/why fixed" label; also seeds the 3.10 persistent hint badge when `path` is non-empty |
-| `retest` | — | draws the green Retest box, clicks it, triggers the per-row rerun on the temp fixed circuit (incl. Mode-B rows). MUST be the final act |
+| `mark_fix` | `target` (`{component_index, path}` or `{net_id, path}`), `label` | yellow component or wire plus the "what/why fixed" label |
+| `retest` | — | draws the green Retest box, clicks it, re-runs the rows on the temp fixed circuit. Always the final act |
 
-Executor-side validation (deterministic): unknown acts are dropped; `retest`
-is forced last (appended if missing); `focus`/`drill`/`mark_fix` targets that
-don't exist in the graph are skipped with a console note. Playback never
-mutates any circuit — the fix was already applied to the temp file by the
-oracle before anything is shown.
+Executor validation (`validate_animation`): unknown acts and any `retest`
+written by the model are dropped, a single `retest` is appended last,
+`focus` / `mark_fix` targets outside the component range are skipped,
+`drill` needs a non-empty path, at most 12 acts survive. Playback never
+mutates a circuit — the fix was applied to a temp copy and verified before
+anything is shown.
 
-## 5. Verify (the self-check oracle — nothing unverified is ever shown AS A FIX)
+## 5. Verify (nothing unverified is ever shown as a fix)
 
-For each hypothesis: `apply_patch(fix.ops)` → L1-regression guard →
-`rerun_with_patch` → **CONFIRMED** iff (a) every row of the agent's cluster
-now passes, (b) no previously-passing row regresses, (c) the guard passed.
-Refuted → one retry with the refutation evidence appended, then dropped.
-When a whole run would deliver ZERO cards, each validly-answered cluster
-gets ONE escalation attempt with every refuted op disclosed and the
-gate-kind sanity check forced ([ESCALATION] block) — still verified, still
-droppable; nothing is ever forced through unverified.
-Merge/dedupe (by normalized op list) → rank by (confirmed, rows covered,
-confidence) → top-K = 3 hypothesis cards. Cards carry ONLY confirmed
-hypotheses; everything else lands in `dropped_ideas`.
+For each reply, in order:
 
-v1.1: with no Digital.jar configured, the SAME Python evaluator that
-produced the original per-row verdict re-judges the patched temp — the
-judge never changes mid-flow. `verified.runner` says which ran
-(`"digital"` | `"evaluator"`).
-
-**Coach-added rows (the Mode B hand-off) are judged by STRICT IMPROVEMENT,
-not perfection.** A row Mode B injected asserts model-guessed cells, not
-ground truth, so demanding a full-row pass would let one imperfect
-side-column guess refute a correct fix. The web layer records the injected
-rows' indices on the temp registration (`l3_temp.coach_rows`) and the
-coordinator maps each to the output columns it originally failed on. For
-those rows only, condition (a) becomes: the fix repairs at least one
-originally-flagged column, breaks no new column, and any remaining columns
-are a strict subset of the original ones — reported per row in
-`verified.coach_residuals` (`{row: [columns]}`), never in `still_failing`.
-A row whose rerun errors, improves nothing, or fails a column it did not
-originally flag still refutes as before. Official rows keep the full bar.
+1. **Normalize.** A `Data` rewrite aimed at a component that is not the
+   circuit's single storage element is redirected to that element (noted
+   in the run). Data changes on a protected program-memory ROM are
+   stripped; a reply left with no ops is dropped as
+   `program_memory_protected`.
+2. **Apply** (`apply_patch`): unknown op → fail; the patched temp is
+   written next to the source (so children resolve); it must re-parse and
+   must not add Layer-1 errors compared with the original (the L1
+   regression guard) or the patch is rejected (`patch_failed`).
+3. **Re-run.** With a jar: `rerun_with_patch` runs the whole testcase on
+   the temp through the per-row runner. Without a jar: the evaluator
+   re-judges the temp with formula models for passing children — the same
+   judge that produced the original verdicts. `verified.runner` says
+   which (`"digital"` | `"evaluator"`).
+4. **Confirmed** iff every row of the cluster now passes and no
+   previously passing row regresses. Coach-added rows (the Mode B
+   hand-off, `l3_temp.coach_rows`) are judged by strict improvement
+   instead of perfection: the fix must repair at least one originally
+   flagged column, break no new column, and leave a strict subset of the
+   original columns — reported per row in `verified.coach_residuals`
+   (`{row: [columns]}`), never as still failing. Official rows keep the
+   full bar.
+5. **Refuted → one retry** with the `[REFUTED ATTEMPT]` block; the retry's
+   verdict replaces the first when it confirms or when the first patch
+   did not even apply.
+6. **Budget.** Every refutation counts; after 4 refuted ideas the run
+   stops, the remaining clusters are skipped and the notes say so. A
+   confirmed fix that repairs every failing row also skips the remaining
+   clusters.
+7. **Escalation.** When a whole run has hypotheses but no confirmed one
+   and the budget is not spent, each cluster with a valid reply gets one
+   more call with `[ESCALATION]` listing all refuted ops — still verified,
+   still droppable.
+8. **Rank and dedupe.** Hypotheses are deduplicated by their normalized
+   ops (confirmed duplicates merge their row sets), ranked by confirmed
+   first, then rows covered, then confidence, then cluster order. The
+   top 3 confirmed become cards. Every other hypothesis lands in
+   `dropped_ideas` with a reason: `refuted`, `patch_failed`,
+   `beyond_top_k`, `invalid_response`, `llm_error`,
+   `program_memory_protected`. With no card at all, the best-ranked
+   unverified hypothesis is returned as `best_unverified`.
 
 ## 6. Response (server → client)
 
 ```json
 {
-  "ok": true,
+  "ok": true, "contract": "l3.debug.v1.1", "model": "...",
   "mode": "analysis",
+  "spec_name": "...", "failing_count": 8, "row_verdict_runner": "digital",
+  "notes": ["subcircuits evaluated as formula models: ...", "..."],
+  "diagnosis_lines": ["Row(s) 21, 22, 23 fail on Result when ALUOp=0b0100."],
+  "clusters": [ {"signature": {"columns": ["Result"], "selects": [["ALUOp", "0b0100"]],
+                               "category": null}, "rows": [21, 22, 23], "folded_rows": 0} ],
   "cards": [
-    { "rank": 1,
-      "confidence": 0.9,
-      "cluster_rows": [0, 1, 2, 3],
+    { "rank": 1, "confidence": 0.9, "cluster_rows": [21, 22, 23],
       "hint": { "suspect_region": "...", "suspect_signals": ["..."], "why": "..." },
-      "verified": { "confirmed": true, "runner": "digital", "regressions": [], "coach_residuals": {} },
-      "fix": { "ops": [ "..." ], "explanation_for_student": "...",
-               "animation_script": [ "...validated, retest forced last..." ] } }
+      "verified": { "confirmed": true, "runner": "digital", "regressions": [],
+                    "coach_residuals": {} },
+      "fix": { "ops": [ "..." ], "ops_pretty": ["replace [159] And with Or"],
+               "explanation_for_student": "...",
+               "animation_script": [ "...validated, retest last..." ] } }
   ],
-  "diagnosis_lines": ["deterministic, per cluster"],
-  "dropped_ideas": [ { "cluster_rows": [ "..." ], "reason": "refuted|invalid_response|llm_error|patch_failed|beyond_top_k", "why": "..." } ],
-  "usage": {"input_tokens": 0, "output_tokens": 0},
-  "llm_calls": 0,
-  "model": "..."
+  "best_unverified": null,
+  "dropped_ideas": [ { "cluster_rows": [], "reason": "refuted", "why": "...",
+                       "detail": "...", "ops_pretty": ["..."] } ],
+  "stopped_early": false, "refuted_ideas": 0,
+  "timings": {"llm_s": [31.2], "verify_s": [1.4], "total_s": 33.1},
+  "verify_runner": "digital",
+  "usage": {"input_tokens": 0, "output_tokens": 0}, "llm_calls": 1,
+  "injected": ["..."], "rom_injected": false,
+  "limits": {"date": "...", "caps": {"modeA": 1, "modeB": 2}, "used": {}, "remaining": {}},
+  "consumed_use": true, "on_coach_temp": false
 }
 ```
 
-The client renders each card at `hint_level` 1 (hint only) and reveals
-`fix` + animation at level 2 on the student's explicit "show me more" —
-the structural half of the F13 spoiler guard. `mode:"lazy"` responses
-carry `suggestions[]` (questions + build hints, with L2-library terms
-marked for the blue hover-cards) and NO cards, NO fix ops. An analysis
-run that delivers zero cards does not consume a daily use; the board shows
-that state through the amber best-idea card alone — no bookkeeping notes.
+Other modes: `"clear"` (every row passes; `message`), `"lazy"`
+(`gross_flags` plus `suggestions[]` — question, hint and Layer-2 library
+`terms` per flag; no cards, no ops), `"error"` (`ok: false`, `warning`),
+`"unsupported"` (transistor labs). The route adds `injected` (official-row
+injection notes), `rom_injected` (also appends the ROM hint to every
+card's explanation as `fix.rom_hint`), `limits`, `consumed_use` and
+`on_coach_temp`. A run consumes a daily use only when it is an analysis
+that delivers at least one card.
 
-## 7. Card lifetime (1.3, explicit)
+Client rendering: the daily-cap chip (with "this run was free" when
+nothing was consumed); a note when the coach temp was analyzed; the
+diagnosis lines; each card at level 1 (hint only) with "Show me more"
+revealing the fix, `ops_pretty`, the animation and "Accept fix → temp
+copy"; when there is no card, the amber unverified card for
+`best_unverified`; a collapsible list of dropped ideas; the run notes;
+the failing-rows table until a fix is revealed. The Analyze button stays
+disabled after a run that delivered cards.
 
-Hypothesis cards are keyed by `(session_id, filename)` and EXPIRE the moment
-that filename is re-uploaded (`/api/circuit` replacing it) or the session is
-cleared. Navigating tabs never clears them; a page refresh does. This is what
-makes the telemetry pair `l3_circuit_re_uploaded → l3_now_passing`
-well-defined. (Store lands with P2.0's sticky per-circuit result store.)
+## 7. Accept fix and retest
 
-## 8. Telemetry events emitted by this flow
+`POST /api/l3/accept_fix` `{session_id, filename, ops, spec_name}` applies
+a confirmed card's ops to a temp copy only — never to the student's file.
+The temp is registered in the session as `<stem>__coach.dig` and as
+`session["l3_temp"]` for the filename, so later Mode A and Mode B runs
+target it; earlier coach rows carry over. When the accept starts from the
+original file and an official set exists, the official rows are written
+into the temp in place. The response re-runs the testcase on the temp
+(jar per-row, else the evaluator) and returns per-row `passed`/`failed`
+statuses and `all_passed`.
 
-`l3_modeA_started(row_count, cluster_count)` · `l3_hypothesis_shown(rank,
-confidence, verified)` · `l3_hint_level(rank, level)` — fires on every
-ladder step, the weak-vs-strong scaffolding metric · `l3_fix_animation_played`
-· `l3_lazy_detected` · `l3_modeA_refunded` — an analysis run delivered zero
-cards · `l3_circuit_re_uploaded(dt)` · `l3_now_passing(row)` — logged through
-the Layer-1 sink (`dlc/telemetry/sink.py`, `POST /api/telemetry`) from day one.
+`POST /api/l3/fix_retest` `{session_id, filename, ops, spec_name}` re-runs
+a patch on the current target (coach temp when present) without
+registering anything; it backs the green Retest box of the animation.
 
-## 9. Addenda — behaviors added after the v1.1 freeze (contract string unchanged)
+## 8. Card lifetime
 
-- **Formula models in the evidence stage** (r63): `assemble_evidence`
-  replays the testcase once (`simulate_rows`) with passing subcircuits
-  replaced by validated formula models; the response `notes` list what
-  was substituted (`subcircuits evaluated as formula models: …`). The
-  payload shapes of §3 are unchanged — only the values arrive faster.
-- **Mode B program extensions on halt-loop programs** (r64): a program
-  group may carry `insert_at`, `insert_before_row`, `pc_shift`, `pc_col`;
-  the words are spliced in front of the loop and the rows inserted before
-  the halt rows, whose PC cell is shifted. `/api/l3/inject` accepts the
-  same four fields.
-- **Manifest attachment** (r64): the manifest that covers the most
-  uploaded filenames wins (ties keep file order), so labs can share
-  subcircuit files.
-- **Regression replay** (r65): `scripts/l3_replay.py` re-runs recorded
-  Mode A analyses against the current code with the jar; every
-  optimization of this pipeline must keep the recorded cases green.
-- **Select-path and frozen-output evidence** (r65, found on a gate-swap
-  ALU): the evidence stage now replays the WHOLE testcase once (also on
-  the jar path) and adds two localizer signals. *Witness*: when a failing
-  output's expected value already sits on another net of its cone, every
-  multiplexer fed by that net on an arm it did not select is steering the
-  output away from the right value; the mux and the logic behind its
-  `sel` — narrowed to the differing sel bits when `sel` is a joined bus —
-  get the reason `SELECT-PATH suspect: …` (weight fades with hop
-  distance). *Frozen output*: a component whose every output net keeps one
-  value across all rows while an input varies gets `its output never
-  changes over the whole testcase …`; the run's `notes` list them. Payload
-  additions (shape otherwise unchanged): `cluster.net_names` (net id →
-  the student's tunnel/port name for the nets in `representative_evidence`)
-  and a `net` name on every `suspect_wiring` pin entry. Without these a
-  swapped And/Or deep in a decode block was tie-broken out of the top-12
-  suspects by component index and the model never saw it.
+Results live in the client's in-memory store keyed by filename
+(`l3Store[filename]` → `modeA`, `modeB`, `cards`). They expire when a
+file is re-uploaded or the session is cleared (`l3ExpireAll`), and on a
+page refresh; switching tabs keeps them. Navigating away during a run
+asks for confirmation because it resets the boards. The server keeps no
+cards; it keeps only the coach temp registration.
+
+## 9. Telemetry events
+
+Client (`dlc/telemetry/sink.py` via `POST /api/telemetry`):
+`l3_modeA_started{filename, model}` · `l3_modeA_run_complete{filename,
+mode, cards, llm_calls}` or `{filename, ok: false}` ·
+`l3_hint_level{rank, level: 2}` on every "Show me more" ·
+`l3_fix_animation_played{rank}` · `l3_fix_accepted{rank, all_passed}` ·
+`l3_fix_drillin_opened{depth}` · `l3_modeA_row_viewed{filename, row}` ·
+`l3_modeA_rerun_clicked` · `l3_circuit_re_uploaded` (a re-upload wiped a
+non-empty store).
+
+Server: `l3_modeA_result_server{filename, mode, cards, confirmed,
+llm_calls, in_tokens, out_tokens, model, rom_injected, consumed_use}` ·
+`l3_accept_fix_server{filename, n_ops, all_passed, injected}`.
+
+## 10. Limits and model selection
+
+`CAPS = {"modeA": 1, "modeB": 2}` runs per day per machine in
+`dlc/l3/limits.py`, stored in `~/.dlc/limits.json` (or `DLC_LIMITS_PATH`),
+enforced only when `DLC_ENFORCE_LIMITS` is set (the release launchers set
+it; a developer checkout runs uncapped). A Mode A use is consumed only by
+an analysis that delivers a card; clear, lazy, error and card-less runs
+are free. The course proxy adds its own per-machine budgets and the
+whole-class breaker on top.
