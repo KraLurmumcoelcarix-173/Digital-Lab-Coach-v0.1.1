@@ -889,11 +889,11 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
                 f"is returned below.")
             break
         cluster_rows = [r.row_index for r in cluster.rows]
-        payload_json = json.dumps(payload, indent=2, default=str)
+        payload_json = json.dumps(payload, default=str)
         if len(payload_json) > 250_000:
             payload = _slim_payload(payload)
             evres.payloads[ci] = payload
-            payload_json = json.dumps(payload, indent=2, default=str)
+            payload_json = json.dumps(payload, default=str)
             notes.append("evidence payload was slimmed (net values limited "
                          "to suspect nets) to fit the model context.")
         prompt = prompt_template.replace("<<PAYLOAD_JSON>>", payload_json)
@@ -991,7 +991,7 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
                 cluster_rows = [r.row_index for r in cluster.rows]
                 prompt = prompt_template.replace(
                     "<<PAYLOAD_JSON>>",
-                    json.dumps(payload, indent=2, default=str)) + (
+                    json.dumps(payload, default=str)) + (
                     (_ROM_INJECTED_NOTE if rom_injected else "")
                     + (_PROGRAM_MEMORY_NOTE if progmem else "")
                     + "\n\n[ESCALATION]\n"

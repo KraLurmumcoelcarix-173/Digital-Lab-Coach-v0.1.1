@@ -251,7 +251,7 @@ def test_payload_matches_frozen_contract_shape():
         assert set(rep) == {"row_index", "net_values", "unresolved_nets",
                             "outputs"}
         some_net = next(iter(rep["net_values"].values()))
-        assert set(some_net) == {"value", "bits", "hex"}
+        assert set(some_net) == {"bits", "hex"}
         for out in rep["outputs"]:
             assert set(out) == {"label", "expected", "found", "ok"}
     assert payload["suspects"]["failing_outputs"] == ["Sum"]
@@ -466,3 +466,22 @@ def test_bug9_payload_names_nets_and_boosts_the_select_path():
     wiring = next(w for w in payload["suspect_wiring"]
                   if w["component_index"] == 12)
     assert {p.get("net") for p in wiring["pins"]} == {"isADD", "isXOR", "S1"}
+
+
+def test_payload_sends_nothing_twice():
+    res = assemble_evidence_for_file(_BUG9, use_manifest=False)
+    payload = res.payloads[0]
+    for rep in payload["cluster"]["representative_evidence"]:
+        assert all(set(v) == {"bits", "hex"} for v in rep["net_values"].values())
+    for w in payload["suspect_wiring"]:
+        assert w.get("label") is not None or "label" not in w
+        for p in w["pins"]:
+            for e in p["connects_to"]:
+                assert e.get("label") is not None or "label" not in e
+    for s in payload["suspects"]["suspects"]:
+        assert None not in s.values()
+    tags = [r for s in payload["suspects"]["suspects"] for r in s["reasons"]
+            if r.startswith("SELECT-PATH suspect")]
+    assert tags and all(len(t) < 90 for t in tags), tags
+    assert any(n.startswith("SELECT-PATH: expected value found on net")
+               for n in payload["suspects"]["notes"])

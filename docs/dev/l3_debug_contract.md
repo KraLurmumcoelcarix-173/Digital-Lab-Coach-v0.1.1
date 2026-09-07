@@ -135,7 +135,7 @@ Evidence stage (`assemble_evidence`):
     ],
     "representative_evidence": [
       { "row_index": 6,
-        "net_values": { "10": {"value": 0, "bits": 4, "hex": "0"} },
+        "net_values": { "10": {"bits": 4, "hex": "0"} },
         "unresolved_nets": [9],
         "outputs": [ {"label": "Result", "expected": "15", "found": "0x0", "ok": false} ] }
     ],
@@ -146,9 +146,8 @@ Evidence stage (`assemble_evidence`):
                                 "display_name": "And[159]", "score": 7.1,
                                 "reasons": ["..."], "in_failing_cones": [],
                                 "in_active_cones": [], "feeds_passing_output": true,
-                                "drives_unresolved": false, "is_subcircuit": false,
-                                "child_reference": null, "child_self_test": null } ],
-                "notes": [] },
+                                "drives_unresolved": false, "is_subcircuit": false } ],
+                "notes": ["SELECT-PATH: expected value found on net ShiftOut (arm in2 of Multiplexer[9]) while the row selects arm in0 — ..."] },
   "suspect_wiring": [
     { "component_index": 16, "element": "Const", "label": null,
       "attrs": { "Value": 1, "Bits": 1 },
@@ -175,7 +174,9 @@ Evidence stage (`assemble_evidence`):
   another net of its cone and a multiplexer fed by that net selected a
   different arm: the mux and the logic behind its `sel` (only the
   differing sel bits when `sel` is a bus joined by a Splitter) get
-  `SELECT-PATH suspect: …`, +2.5 fading by 0.1 per hop from the mux; it
+  `SELECT-PATH suspect: on the logic behind sel bit K of Multiplexer[m]`
+  (the full finding is written once in `suspects.notes`), +2.5 fading by
+  0.1 per hop from the mux; it
   is skipped for 1-bit outputs, values below 8 or all-ones, values seen
   on more than 3 nets, and constants or raw inputs as witnesses.
   *Frozen output* — every output net of a component keeps one value over
@@ -187,7 +188,8 @@ Evidence stage (`assemble_evidence`):
   reason `suspected on all N rows of the cluster`) and keeps 12.
 - `suspect_wiring` covers every ranked suspect plus every storage element
   (ROM, RAM, EEPROM, RAMDualPort, LookUpTable) whether suspected or not:
-  each pin's net, far ends (up to 6, tunnels resolved) and its value on
+  each pin's net, far ends (up to 6, tunnels resolved; a `label` key only
+  when the component has one) and its value on
   the representative rows. `attrs` carries the fix-relevant attributes
   (Bits, Value, Selector Bits, splitting ranges, inputBits/outputBits,
   Signed, …). Storage records add `data_words_stored`, either a
@@ -195,6 +197,11 @@ Evidence stage (`assemble_evidence`):
   `stored_words` (32 words or fewer, hidden when the run used the
   injected course program), `address_by_row`, `address_input_drivers`,
   `output_bit_map` and `expected_outputs_by_row`.
+- Nothing is sent twice: net values carry `hex` and `bits` only (the
+  decimal duplicate stays server-side), null-valued suspect fields and
+  empty labels are omitted, and a select-path finding is spelled out once
+  in `suspects.notes` while each boosted suspect carries the short tag.
+  The payload is serialized without indentation.
 - A payload over 250,000 characters is slimmed to the nets that appear in
   `suspect_wiring`; the run notes say so.
 

@@ -686,13 +686,12 @@ def suspect_wiring(circuit, netlist, indices: list[int],
                 if q.component_index == idx:
                     continue
                 qc = circuit.components[q.component_index]
-                others.append({
-                    "component_index": q.component_index,
-                    "element": qc.element_name,
-                    "label": qc.label,
-                    "pin": q.pin_name,
-                    "direction": q.direction,
-                })
+                other = {"component_index": q.component_index,
+                         "element": qc.element_name,
+                         "pin": q.pin_name, "direction": q.direction}
+                if qc.label:
+                    other["label"] = qc.label
+                others.append(other)
             values = {}
             for r in rep_rows or []:
                 nv = r.net_values.get(str(net.net_id))
@@ -708,11 +707,24 @@ def suspect_wiring(circuit, netlist, indices: list[int],
                     entry["values"] = values
                 pins.append(entry)
         rec = {"component_index": idx, "element": comp.element_name,
-               "label": comp.label, "pins": pins}
+               "pins": pins}
+        if comp.label:
+            rec["label"] = comp.label
         if attrs:
             rec["attrs"] = attrs
         out.append(rec)
     return out
+
+
+def _compact_net_values(net_values: dict) -> dict:
+    return {nid: {"bits": nv.get("bits"), "hex": nv.get("hex")}
+            for nid, nv in net_values.items()}
+
+
+def _compact_suspects(report: dict) -> dict:
+    report["suspects"] = [{k: v for k, v in s.items() if v is not None}
+                          for s in report.get("suspects") or []]
+    return report
 
 
 def build_payload(compact_circuit: dict, spec: TestSpec, cluster: Cluster, *,
@@ -732,13 +744,13 @@ def build_payload(compact_circuit: dict, spec: TestSpec, cluster: Cluster, *,
             ],
             "representative_evidence": [
                 {"row_index": r.row_index,
-                 "net_values": r.net_values,
+                 "net_values": _compact_net_values(r.net_values),
                  "unresolved_nets": r.unresolved_nets,
                  "outputs": r.outputs}
                 for r in reps
             ],
         },
-        "suspects": cluster.merged.to_dict(),
+        "suspects": _compact_suspects(cluster.merged.to_dict()),
     }
     if circuit is not None and netlist is not None:
         names = net_names_map(circuit, netlist)

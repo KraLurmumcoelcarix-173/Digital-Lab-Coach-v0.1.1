@@ -295,11 +295,8 @@ def witness_steer(circuit: Circuit, netlist: NetList, graph: nx.MultiDiGraph,
                     steer |= ancestors(sp)
             steer.add(m)
             bits_txt = ", ".join(str(b) for b in diff_bits) or "?"
-            reason = (
-                f"SELECT-PATH suspect: {comp.element_name}[{m}] takes arm "
-                f"in{sel_val} while net {name} on its arm in{arm} already "
-                f"carries the expected value — the data is computed right; "
-                f"the logic behind sel bit {bits_txt} chooses the wrong arm")
+            reason = (f"SELECT-PATH suspect: on the logic behind sel bit "
+                      f"{bits_txt} of {comp.element_name}[{m}] (see notes)")
             hops = _upstream_hops(graph, m, steer)
             for idx in steer:
                 w = round(_W_WITNESS - 0.1 * min(hops.get(idx, 8), 8), 2)
@@ -307,8 +304,10 @@ def witness_steer(circuit: Circuit, netlist: NetList, graph: nx.MultiDiGraph,
                 if prev is None or w > prev[0]:
                     boosted[idx] = (w, reason)
             notes.append(
-                f"expected value found on net {name} (arm in{arm} of "
-                f"{comp.element_name}[{m}]); the row selects arm in{sel_val}.")
+                f"SELECT-PATH: expected value found on net {name} (arm in{arm} "
+                f"of {comp.element_name}[{m}]) while the row selects arm "
+                f"in{sel_val} — the data is computed right; the logic behind "
+                f"sel bit {bits_txt} chooses the wrong arm.")
     return boosted, notes
 
 def localize(
@@ -474,6 +473,9 @@ def merge_reports(reports: list[SuspectReport], *, max_suspects: int = 12) -> Su
         for lb in r.passing_outputs:
             if lb not in merged.passing_outputs:
                 merged.passing_outputs.append(lb)
+        for note in r.notes:
+            if "max_suspects" not in note and note not in merged.notes:
+                merged.notes.append(note)
 
     by_idx: dict[int, Suspect] = {}
     hits: dict[int, int] = {}

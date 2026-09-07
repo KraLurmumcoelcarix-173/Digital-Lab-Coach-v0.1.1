@@ -31,7 +31,7 @@ Reading guide: `circuit` is the verified structural inventory (selectors
 list who drives each mux/decoder pin). `cluster.rows` are the failing rows
 with expected-vs-found per output column. `cluster.representative_evidence`
 carries full per-net values for up to 2 rows — `net_values` keys are net
-ids, values are what the evaluator resolved. `suspects` is the merged
+ids, each with `hex` (the resolved value) and `bits`. `suspects` is the merged
 fault-localizer report: components ranked by presence on the ACTIVE signal
 path of failing outputs, with per-suspect reasons; `component_index` there
 is the index your fix ops must use. `suspect_wiring` lists, for EVERY
@@ -52,7 +52,8 @@ bare numbers. Two localizer reasons outrank every other clue when they
 appear on a suspect:
 - "SELECT-PATH suspect": the expected value already sits on another arm
   of that multiplexer, so the data path is RIGHT and the logic driving
-  its `sel` chose the wrong arm. Repair the select logic — run the
+  its `sel` chose the wrong arm (the full finding — which net, which arm,
+  which sel bit — is written once in `suspects.notes`). Repair the
   gate-kind sanity check over every boosted gate on the way to `sel` —
   and never touch the arm's data source.
 - "its output never changes over the whole testcase although its inputs
