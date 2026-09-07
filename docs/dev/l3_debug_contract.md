@@ -208,8 +208,21 @@ Evidence stage (`assemble_evidence`):
   *Frozen output* — every output net of a component keeps one value over
   the whole testcase (at least 6 rows) while an input varies: `its output
   never changes over the whole testcase …`, +2.0 (storage elements and
-  subcircuit instances excluded). In, Clock, Tunnel, Testcase and
-  Rectangle are never suspects. Each row keeps its top 12; the merge
+  subcircuit instances excluded). A third signal needs a ROM whose
+  address is driven by one selector with 1-bit input lines (a priority
+  encoder behind instruction detectors): *line witness* — the stored
+  words are trusted, so the passing rows teach which word bits each
+  output column reads (rows where no line asserts teach the idle output;
+  without such a row, a wired `f` flag means idle reads 0). For a failing
+  row the address holding its expected word is then known: a line that
+  asserts although the word lives elsewhere, or every line of that
+  address staying silent, boosts the gate driving the line by +6.0 with
+  `LINE WITNESS: <selector> input <pin> asserts on row R although the
+  expected word lives at …` (or `… stays silent on row R …`); the full
+  sentence, with the address and the line that selects it, is written
+  once in `suspects.notes`, and the run notes list the gates named.
+  Grounded, constant or raw-input lines are never boosted. In, Clock,
+  Tunnel, Testcase and Rectangle are never suspects. Each row keeps its top 12; the merge
   averages scores, adds the share of rows a suspect appears on (with the
   reason `suspected on all N rows of the cluster`) and keeps 12.
 - `suspect_wiring` covers every ranked suspect plus every storage element
@@ -297,7 +310,7 @@ target it):
 | `change_attribute` | `component_index`, `name`, `value` |
 | `replace_element` | `component_index`, `new_element` |
 | `swap_pins` | `component_index`, `pin_a`, `pin_b` |
-| `rewire_pin` | `component_index`, `pin`, `to` (`{component_index, pin}`) |
+| `rewire_pin` | `component_index`, `pin`, `to` (`{component_index, pin}`) — a pin wired only to its own tunnel stub keeps the stub, which takes the destination net's tunnel name (no dangling Tunnel, which Digital rejects); otherwise the pin's wire is redrawn to the destination |
 | `add_wire` / `delete_wire` | `p1`, `p2` |
 | `add_component` | `element_name`, `position` (+ optional `attributes`) |
 | `delete_component` | `component_index` |

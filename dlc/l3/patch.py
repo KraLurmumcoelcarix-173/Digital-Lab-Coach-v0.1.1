@@ -267,6 +267,30 @@ class _PinIndex:
                 f"delete_wire/add_wire explicitly instead."
             )
 
+    def net_of_pin(self, component_index: int, pin_name: str):
+        for net in self.netlist.nets:
+            for p in net.pins:
+                if p.component_index == component_index and p.pin_name == pin_name:
+                    return net
+        return None
+
+    def stub_tunnel(self, coord: tuple[int, int]):
+        """(tunnel index, tunnel coord) when exactly one wire leaves `coord`
+        and its far end is a Tunnel element nothing else touches."""
+        segs = [w for w in self.circuit.wires
+                if coord in (w.p1.as_tuple(), w.p2.as_tuple())]
+        if len(segs) != 1:
+            return None
+        w = segs[0]
+        far = w.p2.as_tuple() if w.p1.as_tuple() == coord else w.p1.as_tuple()
+        if self.degree.get(far, 0) != 1:
+            return None
+        for i, comp in enumerate(self.circuit.components):
+            if (comp.element_name == "Tunnel"
+                    and (comp.position.x, comp.position.y) == far):
+                return i, far
+        return None
+
     def attach_coord(self, component_index: int, pin_name: str) -> tuple[int, int]:
         target_net = None
         pin_coord = None
@@ -317,6 +341,20 @@ def _apply_rewire_pin(root, op, pins: _PinIndex) -> str:
     to = op["to"]
     dst = pins.attach_coord(to["component_index"], to["pin"])
     pins.require_simple(src, "rewire_pin")
+    # a pin wired through its own tunnel stub (the tunnel-per-pin habit)
+    # is moved the way a student would: the stub keeps its wire and takes
+    # the destination net's tunnel name, so no Tunnel is left dangling
+    stub = pins.stub_tunnel(src)
+    dst_net = pins.net_of_pin(to["component_index"], to["pin"])
+    names = sorted(dst_net.tunnel_names) if dst_net is not None else []
+    if stub is not None and names:
+        t_idx, _far = stub
+        old = pins.circuit.components[t_idx].attributes.get("NetName")
+        _apply_change_attribute(root, {"component_index": t_idx,
+                                       "name": "NetName", "value": names[0]})
+        return (f"rewire_pin[{idx}].{op['pin']}@{src} -> "
+                f"[{to['component_index']}].{to['pin']} "
+                f"(tunnel [{t_idx}] renamed {old!r} -> {names[0]!r})")
     wires = _wires_block(root)
     removed = 0
     for wire in list(wires.findall("wire")):

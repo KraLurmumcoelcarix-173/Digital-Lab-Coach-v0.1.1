@@ -833,9 +833,10 @@ function l3ProposalsHtml(mb) {
       `<div class="l3-prop-bar"><button class="btn" data-l3-act="propose">Try again</button></div>`;
   }
   if (!p.proposals.length) {
-    return `<div class="l3-note-card">${escapeHtml((p.notes || []).join(" ") ||
-      "No usable proposals this time.")}</div>` +
+    const retry = p.all_categories_covered ? "" :
       `<div class="l3-prop-bar"><button class="btn" data-l3-act="propose">Try again</button></div>`;
+    return `<div class="l3-note-card">${escapeHtml((p.notes || []).join(" ") ||
+      "No usable proposals this time.")}</div>` + retry;
   }
   let html = `<div class="l3-sec-title">Coach proposals
     <span class="muted">(model: ${escapeHtml(p.model || "?")})</span></div>`;

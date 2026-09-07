@@ -545,3 +545,13 @@ Mode C (per-spec fallback to Mode B happens automatically).
   verified repair is applied to a temp copy, the rows still failing are
   re-analyzed on it with a `[FIXED SO FAR]` block, and the run ends with
   ONE card carrying both repairs (`test_l3_debugger.py`).
+- `bug12_encoder_line/`: the control-unit shape — four opcode detectors
+  feed a priority encoder whose `num` addresses a decode ROM and whose
+  `f` flag is the ROM's chip select. `loud_detector.dig` has one detector
+  built as an Or, so it asserts on rows that expect the idle output;
+  `silent_detector.dig` has one detector wired to the wrong opcode bit,
+  so its own row reads the idle word and another row reads its word.
+  Guards the line witness: the wrong detector is the top suspect of every
+  cluster with a `LINE WITNESS` reason and the notes name the address
+  (`test_l3_evidence.py`); a `replace_element` fix verifies on the loud
+  file and a `rewire_pin` fix on the silent one (`test_l3_debugger.py`).

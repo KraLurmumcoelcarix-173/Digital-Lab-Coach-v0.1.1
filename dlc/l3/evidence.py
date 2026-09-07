@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import networkx as nx
+
 from dlc.analyzer.sequential import _CLOCKED_ELEMENTS as _STATE_ELEMENTS
 from dlc.facts.extractor import extract_facts
-from dlc.l3.localizer import (SuspectReport, _net_of_pin, _witness_from_root,
+from dlc.l3.localizer import (_W_LINE, SuspectReport, _net_of_pin,
+                              _output_component_index, _witness_from_root,
                               localize, merge_reports)
 from dlc.l3.manifest import decode_program_word, find_manifest
 from dlc.llm.explain import _compact_facts
@@ -13,7 +16,8 @@ from dlc.parser.dig_parser import parse_dig_file
 from dlc.parser.graph import build_signal_graph
 from dlc.parser.netlist import build_netlist
 from dlc.sim import models as formula_models
-from dlc.sim.simulator import SimResult, simulate_rows, simulate_sequential
+from dlc.sim.simulator import (SimResult, _gate_bits, _rom_words,
+                               simulate_rows, simulate_sequential)
 from dlc.testing.spec import TestSpec, extract_test_specs, match_variables_to_io
 
 CONTRACT = "l3.debug.v1.1"
@@ -217,6 +221,235 @@ def stuck_components(circuit, netlist, sims: dict[int, SimResult]) -> dict[int, 
             f"its output never changes over the whole testcase (always "
             f"{shown}) although its inputs do — dead or wrong-kind logic")
     return result
+
+
+_LINE_MAX_INPUTS = 64
+_LINE_MAX_ADDRESSES = 3
+_LINE_SELECTORS = frozenset({"PriorityEncoder", "Splitter"})
+_LINE_SKIP_DRIVERS = frozenset({"Ground", "VDD", "Const", "In", "Clock"})
+
+
+def _rom_addr_selector(circuit, netlist, rom_idx: int):
+    """(address net id, selector index, [(pin, net id, driver index)]) when
+    one component alone drives the ROM's address; else None."""
+    a_net = _net_of_pin(netlist, rom_idx, "A", "in")
+    if a_net is None:
+        return None
+    drivers = [p.component_index for p in a_net.pins
+               if p.direction == "out" and p.component_index != rom_idx]
+    if len(drivers) != 1:
+        return None
+    sel_idx = drivers[0]
+    lines: list[tuple[str, int, int | None]] = []
+    for net in netlist.nets:
+        mine = [p for p in net.pins
+                if p.component_index == sel_idx and p.direction == "in"]
+        if not mine:
+            continue
+        drv = next((q.component_index for q in net.pins
+                    if q.direction == "out" and q.component_index != sel_idx),
+                   None)
+        for p in mine:
+            lines.append((p.pin_name, net.net_id, drv))
+    if not lines or len(lines) > _LINE_MAX_INPUTS:
+        return None
+    return a_net.net_id, sel_idx, lines
+
+
+def selector_line_witness(circuit, netlist, graph, spec, bindings,
+                          all_sims: dict, failing, *,
+                          net_names=None) -> dict[int, tuple[dict, list[str]]]:
+    """Stored words are trusted, so when a ROM's address comes from a
+    selector fed by 1-bit lines (a priority encoder behind instruction
+    detectors), the passing rows teach which word each output column
+    reads; for a failing row the address holding its expected word is
+    then known, and the line that asserts although the word lives
+    elsewhere — or stays silent on the row that needs it — names the
+    broken gate. {failing row: ({driver index: (weight, reason)}, notes)}."""
+    failing_set = set(failing)
+    rows_by_index = {r.line_index: r for r in spec.rows if not r.is_malformed}
+    out: dict[int, tuple[dict, list[str]]] = {}
+    sample = next(iter(all_sims.values()), None)
+    if sample is None:
+        return out
+    for rom_idx, comp in enumerate(circuit.components):
+        if comp.element_name != "ROM":
+            continue
+        found = _rom_addr_selector(circuit, netlist, rom_idx)
+        if found is None:
+            continue
+        addr_nid, sel_idx, lines = found
+        sel_kind = circuit.components[sel_idx].element_name
+        if sel_kind not in _LINE_SELECTORS:
+            continue
+        if any(sample.net_bits.get(nid, 1) != 1 for _p, nid, _d in lines):
+            continue
+        words = _rom_words(comp)
+        if not words:
+            continue
+        bits = _gate_bits(comp)
+        downstream = set(nx.descendants(graph, rom_idx)) if rom_idx in graph else set()
+        outs = {h: _output_component_index(circuit, h) for h in spec.headers
+                if bindings.get(h) is not None and bindings[h].role == "output"}
+        fed = {h for h, i in outs.items() if i is not None and i in downstream}
+        if not fed:
+            continue
+
+        cand: dict[str, set[int]] = {}
+        widths: dict[str, int] = {}
+        lines_at: dict[int, set[str]] = {}
+        idle: dict | None = None
+        idle_ok = True
+        learned = 0
+        for ridx, sim in all_sims.items():
+            row = rows_by_index.get(ridx)
+            if ridx in failing_set or row is None:
+                continue
+            _outs, mism = _outputs_report(spec, bindings, row, sim)
+            exp = {h: v for h, v in _expected_ints(spec, bindings, row).items()
+                   if h in fed}
+            if mism or not exp:
+                continue
+            asserted = {p for p, nid, _d in lines if sim.net_values.get(nid) == 1}
+            if not asserted:
+                vec = {h: v[0] for h, v in exp.items()}
+                if idle is None:
+                    idle = vec
+                elif idle != vec:
+                    idle_ok = False
+                continue
+            addr = sim.net_values.get(addr_nid)
+            if addr is None:
+                continue
+            word = words[addr] if 0 <= addr < len(words) else 0
+            learned += 1
+            lines_at[addr] = (lines_at[addr] & asserted if addr in lines_at
+                              else set(asserted))
+            for h, (val, width) in exp.items():
+                w = width or 1
+                m = (1 << w) - 1
+                ok = {b for b in range(0, bits - w + 1)
+                      if ((word >> b) & m) == (val & m)}
+                cand[h] = cand[h] & ok if h in cand else ok
+                widths[h] = w
+        mapped = {h: bs for h, bs in cand.items() if bs}
+        if not learned or not mapped:
+            continue
+        if not idle_ok:
+            idle = None
+        idle_seen = idle is not None
+        if idle is None:
+            # no passing idle row to learn from: when the selector's "any
+            # line set" flag is wired in (chip select or output mask), no
+            # asserted line means every output reads 0
+            f_net = _net_of_pin(netlist, sel_idx, "f", "out")
+            if f_net is not None and any(p.component_index != sel_idx
+                                         for p in f_net.pins):
+                idle = {h: 0 for h in mapped}
+
+        pin_names = {p for p, _n, _d in lines}
+        drv_of = {p: d for p, _n, d in lines}
+        is_penc = sel_kind == "PriorityEncoder"
+        # a Splitter joining single bits: input i is address bit i
+        bit_join = (sel_kind == "Splitter" and all(
+            t.strip() == "1" for t in str(circuit.components[sel_idx]
+                                          .attributes.get("Input Splitting", ""))
+            .split(",")))
+
+        def lines_for(a: int) -> set[str]:
+            if is_penc and f"in_{a}" in pin_names:
+                return {f"in_{a}"}
+            if bit_join:
+                return {f"in{i}" for i in range(a.bit_length())
+                        if (a >> i) & 1 and f"in{i}" in pin_names}
+            return set(lines_at.get(a, set()))
+
+        def drv_name(p: str) -> str:
+            d = drv_of.get(p)
+            if d is None:
+                return "nothing"
+            return f"{circuit.components[d].element_name}[{d}]"
+
+        def boostable(p: str) -> bool:
+            d = drv_of.get(p)
+            return (d is not None and circuit.components[d].element_name
+                    not in _LINE_SKIP_DRIVERS)
+
+        sel_name = f"{circuit.components[sel_idx].element_name}[{sel_idx}]"
+        rom_name = f"ROM[{rom_idx}]"
+        for ridx in failing:
+            sim = all_sims.get(ridx)
+            row = rows_by_index.get(ridx)
+            if sim is None or row is None:
+                continue
+            exp = _expected_ints(spec, bindings, row)
+            vec = {h: exp[h][0] for h in mapped if h in exp}
+            if not vec:
+                continue
+            asserted = {p for p, nid, _d in lines if sim.net_values.get(nid) == 1}
+            hits: list[int] = []
+            for a, word in enumerate(words):
+                if all(any(((word >> b) & ((1 << widths[h]) - 1))
+                           == (v & ((1 << widths[h]) - 1)) for b in mapped[h])
+                       for h, v in vec.items()):
+                    hits.append(a)
+            expects_idle = (idle is not None
+                            and all(idle.get(h) == v for h, v in vec.items()))
+            if not hits and not expects_idle:
+                continue
+            legit: set[str] = set()
+            for a in hits:
+                legit |= lines_for(a)
+            boosts, notes = out.setdefault(ridx, ({}, []))
+            addr_r = sim.net_values.get(addr_nid)
+            if hits:
+                where = (f"address {hits[0]}" if len(hits) == 1
+                         else "address " + " or ".join(str(a) for a in hits[:_LINE_MAX_ADDRESSES]))
+                by = sorted(legit)
+                word_where = (f"the word at {where}"
+                              + (f", which {sel_name} selects when "
+                                 f"{', '.join(by)} is 1" if by else ""))
+            else:
+                where = "no address (the row expects the idle output)"
+                word_where = ("the idle output seen on passing rows where "
+                              "no input line asserts" if idle_seen else
+                              "the all-zero idle output the circuit produces "
+                              "when no selector input line is 1")
+            for p in sorted(asserted - legit):
+                if not boostable(p):
+                    continue
+                d = drv_of[p]
+                tag = (f"LINE WITNESS: {sel_name} input {p} asserts on row "
+                       f"{ridx} although the expected word lives at {where} "
+                       f"(see notes)")
+                if d not in boosts or _W_LINE > boosts[d][0]:
+                    boosts[d] = (_W_LINE, tag)
+                notes.append(
+                    f"LINE WITNESS row {ridx}: {sel_name} input {p} (driven by "
+                    f"{drv_name(p)}) is 1, so {rom_name} reads address {addr_r}; "
+                    f"the expected outputs are {word_where} — the gate driving "
+                    f"{p} must be silent on this row: check its kind against "
+                    f"its input values.")
+            if hits and len(hits) <= _LINE_MAX_ADDRESSES and not (asserted & legit):
+                for a in hits:
+                    for p in sorted(lines_for(a)):
+                        if not boostable(p):
+                            continue
+                        d = drv_of[p]
+                        tag = (f"LINE WITNESS: {sel_name} input {p} stays silent "
+                               f"on row {ridx} although the expected word lives "
+                               f"at address {a} (see notes)")
+                        if d not in boosts or _W_LINE > boosts[d][0]:
+                            boosts[d] = (_W_LINE, tag)
+                        notes.append(
+                            f"LINE WITNESS row {ridx}: the expected outputs are "
+                            f"the word at address {a}, which {sel_name} selects "
+                            f"when {p} (driven by {drv_name(p)}) is 1 — {p} is 0 "
+                            f"on this row, so the gate driving it must assert "
+                            f"here: check its kind and inputs.")
+            if not boosts and not notes:
+                out.pop(ridx, None)
+    return out
 
 
 def _pc_column(manifest, bindings) -> str | None:
@@ -536,7 +769,8 @@ def gross_check(circuit, spec: TestSpec, failing_count: int, *,
 def _row_evidence(circuit, netlist, graph, spec, bindings, row, *,
                   sel_cols, manifest, sim=None, jar_cells=None,
                   notes=None, stuck=None, net_names=None,
-                  all_sims=None, row_order=None) -> RowEvidence:
+                  all_sims=None, row_order=None,
+                  line_witness=None) -> RowEvidence:
     if sim is None:
         sim = simulate_sequential(circuit, netlist, graph, spec,
                                   row.line_index)
@@ -576,6 +810,12 @@ def _row_evidence(circuit, netlist, graph, spec, bindings, row, *,
                 if idx not in steer_extra or hit[0] > steer_extra[idx][0]:
                     steer_extra[idx] = hit
             trace_notes.extend(n for n in tnotes if n not in trace_notes)
+    if line_witness:
+        boosts, lnotes = line_witness
+        for idx, hit in boosts.items():
+            if idx not in steer_extra or hit[0] > steer_extra[idx][0]:
+                steer_extra[idx] = hit
+        trace_notes.extend(n for n in lnotes if n not in trace_notes)
     report = localize(circuit, netlist, graph, sim, outputs,
                       expected_values=expected, stuck=stuck,
                       net_names=net_names, steer_extra=steer_extra or None)
@@ -961,6 +1201,19 @@ def assemble_evidence(circuit, netlist, graph, spec: TestSpec, *,
             + ", ".join(f"{circuit.components[i].element_name}[{i}]"
                         for i in sorted(stuck)))
     row_order = [r.line_index for r in spec.rows if not r.is_malformed]
+    try:
+        line_hits = selector_line_witness(circuit, netlist, graph, spec,
+                                          bindings, all_sims, failing,
+                                          net_names=net_names)
+    except Exception:
+        line_hits = {}
+    if line_hits:
+        named = sorted({f"{circuit.components[i].element_name}[{i}]"
+                        for b, _n in line_hits.values() for i in b})
+        res.notes.append(
+            "line witness: judged against the trusted ROM words, the selector "
+            "lines that assert or stay silent on the failing rows point at "
+            + ", ".join(named) + ".")
     evidence_rows = list(failing)
     pc_col = _pc_column(manifest, bindings)
     if pc_col and row_mismatch_cells and _holds_state(circuit):
@@ -990,6 +1243,7 @@ def assemble_evidence(circuit, netlist, graph, spec: TestSpec, *,
                 sim=sims.get(idx), jar_cells=jar_cells, notes=res.notes,
                 stuck=stuck, net_names=net_names,
                 all_sims=all_sims, row_order=row_order,
+                line_witness=line_hits.get(idx),
             ))
         except Exception as exc:
             res.notes.append(

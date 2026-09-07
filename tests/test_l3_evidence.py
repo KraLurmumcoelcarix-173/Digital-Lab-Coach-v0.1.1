@@ -522,3 +522,73 @@ def test_bug10_state_trace_points_at_the_write_row_and_its_mux():
                for n in notes)
     assert any(n.startswith("SELECT-PATH at row 0, when register 1 was written")
                for n in notes)
+
+
+_BUG12 = f"{_BENCH}/bug12_encoder_line"
+
+
+def _detector(path, label):
+    circ = parse_dig_file(path)
+    return next(i for i, c in enumerate(circ.components) if c.label == label)
+
+
+def test_bug12_loud_detector_is_named_by_the_line_witness():
+    path = f"{_BUG12}/loud_detector.dig"
+    culprit = _detector(path, "is_a")
+    res = assemble_evidence_for_file(path, use_manifest=False)
+    assert res.mode == "analysis" and res.failing_count == 3
+    assert any(n.startswith("line witness:") and f"Or[{culprit}]" in n
+               for n in res.notes)
+    for cluster, payload in zip(res.clusters, res.payloads):
+        top = payload["suspects"]["suspects"][0]
+        assert top["component_index"] == culprit and top["element_name"] == "Or"
+        row = cluster.rows[0].row_index
+        assert any(r.startswith(f"LINE WITNESS: PriorityEncoder[9] input in_0 "
+                                f"asserts on row {row}") for r in top["reasons"])
+        notes = payload["suspects"]["notes"]
+        assert any(n.startswith(f"LINE WITNESS row {row}:")
+                   and f"driven by Or[{culprit}]" in n
+                   and "idle output" in n for n in notes)
+    import json
+    assert "9,6,a,5" not in json.dumps(res.payloads)
+
+
+def test_bug12_silent_detector_is_named_on_both_of_its_rows():
+    path = f"{_BUG12}/silent_detector.dig"
+    culprit = _detector(path, "is_c")
+    res = assemble_evidence_for_file(path, use_manifest=False)
+    assert res.mode == "analysis" and res.failing_count == 2
+    by_row = {c.rows[0].row_index: p for c, p in zip(res.clusters, res.payloads)}
+    assert set(by_row) == {3, 7}
+    for row, payload in by_row.items():
+        top = payload["suspects"]["suspects"][0]
+        assert top["component_index"] == culprit and top["element_name"] == "And"
+    silent = by_row[3]["suspects"]
+    assert any(r.startswith("LINE WITNESS: PriorityEncoder[9] input in_2 stays "
+                            "silent on row 3 although the expected word lives "
+                            "at address 2") for r in silent["suspects"][0]["reasons"])
+    assert any("the word at address 2, which PriorityEncoder[9] selects when "
+               f"in_2 (driven by And[{culprit}]) is 1" in n for n in silent["notes"])
+    loud = by_row[7]["suspects"]
+    assert any(r.startswith("LINE WITNESS: PriorityEncoder[9] input in_2 asserts "
+                            "on row 7") for r in loud["suspects"][0]["reasons"])
+
+
+def test_line_witness_stays_silent_without_an_encoder_fed_rom():
+    from dlc.l3.evidence import selector_line_witness
+    from dlc.testing.spec import match_variables_to_io
+    from dlc.sim.simulator import simulate_rows
+
+    c, nl, g = _parsed(_BUG3)
+    spec = extract_test_specs(c)[0]
+    bindings = match_variables_to_io(spec.headers, c)
+    sims = simulate_rows(c, nl, g, spec)
+    failing = [i for i, s in sims.items()
+               if _outputs_report_mismatch(spec, bindings, c, i, s)]
+    assert selector_line_witness(c, nl, g, spec, bindings, sims, failing) == {}
+
+
+def _outputs_report_mismatch(spec, bindings, circuit, idx, sim):
+    from dlc.l3.evidence import _outputs_report
+    row = next(r for r in spec.rows if r.line_index == idx)
+    return bool(_outputs_report(spec, bindings, row, sim)[1])

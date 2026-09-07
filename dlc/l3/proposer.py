@@ -464,6 +464,15 @@ def propose_rows(
                 if m.get("description"):
                     t["category_conventions"] = m["description"]
 
+    complete = _complete_targets(report, targets)
+    if complete:
+        targets = [t for t in targets if t["file"] not in complete]
+        if not targets:
+            return {"ok": True, "proposals": [], "rejected": [],
+                    "model": None, "error": None,
+                    "all_categories_covered": sorted(complete),
+                    "notes": [complete[f] for f in sorted(complete)]}
+
     prompt = build_prompt(report, targets)
     used_model = model or _propose_model()
     resp = call(prompt, model=used_model, max_tokens=4000,
@@ -504,6 +513,34 @@ def propose_rows(
 
     return {"ok": True, "proposals": valid, "rejected": rejected,
             "model": used_model, "error": None, "notes": notes}
+
+
+def _complete_targets(report: TreeCoverageReport,
+                      targets: list[dict]) -> dict[str, str]:
+    """Files whose lab categories are all exercised already: nothing for
+    the coach to propose there. {file: note}."""
+    by_file = {c.file: c for c in report.circuits}
+    out: dict[str, str] = {}
+    for t in targets:
+        cov = by_file.get(t["file"])
+        row_cats = cov is not None and cov.categories_total > 0
+        prog_cats = "program_categories_missing" in t
+        if not (row_cats or prog_cats):
+            continue
+        if row_cats and cov.categories_missing:
+            continue
+        if prog_cats and t["program_categories_missing"]:
+            continue
+        if row_cats:
+            what = (f"all {cov.categories_total} instruction categories "
+                    f"are already exercised by your rows")
+        else:
+            n = len(t.get("program_categories_present") or [])
+            what = (f"the program already executes all {n} instruction "
+                    f"categories")
+        out[t["file"]] = (f"{t['file']}: {what} — the coach has nothing "
+                          f"to add.")
+    return out
 
 
 def _classify_reason(reason: str) -> str:

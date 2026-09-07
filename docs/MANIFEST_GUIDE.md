@@ -128,7 +128,9 @@ only refers to it by name.
   identify it, written with the testcase's own column names. Values may be
   decimal, `0x…` or `0b…`.
 - A file is green when every category is matched by at least one test
-  row; the Coverage Coach proposes rows for the missing ones.
+  row; the Coverage Coach proposes rows for the missing ones. Once every
+  category is matched, *Propose new test rows* stops before asking the
+  model, says the file is complete, and refunds the use.
 - Every column in a `when` must exist in that file's testcase header,
   otherwise the manifest stays silent for that file.
 

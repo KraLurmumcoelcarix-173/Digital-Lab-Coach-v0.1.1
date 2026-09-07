@@ -863,3 +863,52 @@ def test_bug10_swapped_write_back_arms_are_fixed_by_swap_pins():
     assert res["cards"][0]["verified"]["confirmed"] is True
     prompt = call.log[0]
     assert '"state_trace"' in prompt and "STATE TRACE" in prompt
+
+
+_BUG12 = f"{_BENCH}/bug12_encoder_line"
+
+
+def _bug12_component(path, label):
+    from dlc.parser.dig_parser import parse_dig_file
+    circ = parse_dig_file(path)
+    return next(i for i, c in enumerate(circ.components) if c.label == label)
+
+
+def test_bug12_loud_detector_is_fixed_by_replace_element():
+    path = f"{_BUG12}/loud_detector.dig"
+    culprit = _bug12_component(path, "is_a")
+    ops = [{"op": "replace_element", "component_index": culprit,
+            "new_element": "And"}]
+    call = _fake([_reply(ops, why="is_a fires on rows that decode nothing")])
+    res = debugger.debug_circuit(path, call=call, use_manifest=False)
+    assert res["mode"] == "analysis" and res["llm_calls"] == 1
+    card = res["cards"][0]
+    assert card["verified"]["confirmed"] is True
+    assert card["fix"]["ops_pretty"] == [f"replace [{culprit}] Or 'is_a' with And"]
+    prompt = call.log[0]
+    assert "LINE WITNESS: PriorityEncoder[9] input in_0 asserts on row" in prompt
+    assert "\n[ROM NOTE]\n" in prompt
+    assert '"9,6,a,5"' not in prompt and "9,6,a,5" not in prompt
+
+
+def test_bug12_silent_detector_is_fixed_by_rewire_pin():
+    from dlc.parser.dig_parser import parse_dig_file
+    from dlc.parser.netlist import build_netlist
+    path = f"{_BUG12}/silent_detector.dig"
+    culprit = _bug12_component(path, "is_c")
+    circ = parse_dig_file(path)
+    netlist = build_netlist(circ)
+    not_op2 = next(p.component_index for net in netlist.nets
+                   if "nop2" in net.tunnel_names for p in net.pins
+                   if p.direction == "out"
+                   and circ.components[p.component_index].element_name == "Not")
+    ops = [{"op": "rewire_pin", "component_index": culprit, "pin": "in2",
+            "to": {"component_index": not_op2, "pin": "Y"}}]
+    call = _fake([_reply(ops, why="is_c watches op2 instead of its inverse")])
+    res = debugger.debug_circuit(path, call=call, use_manifest=False)
+    assert res["mode"] == "analysis" and res["llm_calls"] == 1
+    assert res["cards"][0]["verified"]["confirmed"] is True
+    prompt = call.log[0]
+    assert ("LINE WITNESS: PriorityEncoder[9] input in_2 stays silent on row 3"
+            in prompt)
+    assert "the word at address 2" in prompt

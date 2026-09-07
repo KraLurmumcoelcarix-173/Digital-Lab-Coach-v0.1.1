@@ -204,6 +204,50 @@ def test_propose_rows_refuses_on_select_gate_with_zero_model_calls():
     assert "'Op'" in out["error"] and "value 3" in out["error"]
 
 
+def _and_manifest(tmp_path, monkeypatch, categories):
+    mdir = tmp_path / "manifests"
+    mdir.mkdir(exist_ok=True)
+    (mdir / "and.json").write_text(json.dumps({
+        "lab": "and", "applies_to": ["single_and.dig"],
+        "categories": {"single_and.dig": categories},
+        "official_tests": {}, "reference_dir": None,
+    }))
+    monkeypatch.setenv("DLC_MANIFEST_DIR", str(mdir))
+
+
+def test_propose_rows_stops_when_every_category_is_covered(tmp_path, monkeypatch):
+    _and_manifest(tmp_path, monkeypatch, [
+        {"name": "both_high", "when": {"A": 1, "B": 1}},
+        {"name": "a_low", "when": {"A": 0}},
+    ])
+
+    def dead(prompt, **_kw):
+        raise AssertionError("a complete file must not reach the model")
+
+    out = proposer.propose_rows(_AND, call=dead)
+    assert out["ok"] is True and out["proposals"] == []
+    assert out["all_categories_covered"] == ["single_and.dig"]
+    assert out["model"] is None
+    assert out["notes"] == ["single_and.dig: all 2 instruction categories are "
+                            "already exercised by your rows — the coach has "
+                            "nothing to add."]
+
+    _and_manifest(tmp_path, monkeypatch, [
+        {"name": "both_high", "when": {"A": 1, "B": 1}},
+        {"name": "never", "when": {"A": 2}},
+    ])
+    calls = []
+
+    def fake(prompt, **kw):
+        calls.append(prompt)
+        return {"ok": True, "text": "{}", "error": None, "usage": None,
+                "model": kw.get("model")}
+
+    out2 = proposer.propose_rows(_AND, call=fake)
+    assert calls and out2["ok"] is True
+    assert "all_categories_covered" not in out2
+
+
 def test_propose_rows_survives_model_failure_and_garbage():
     def dead(prompt, **kw):
         return {"ok": False, "text": None, "error": "no key", "usage": None,

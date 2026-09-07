@@ -48,7 +48,7 @@ Or: the fix is replace_element, not rewiring).
 `cluster.net_names` maps net ids to the student's own tunnel and port
 names; read `net_values` and each suspect_wiring pin's `net` through it
 so you reason about signals ("isShiftGroup is 0 on every SLL row"), not
-bare numbers. Two localizer reasons outrank every other clue when they
+bare numbers. Three localizer reasons outrank every other clue when they
 appear on a suspect:
 `cluster.state_trace` (present only when a failing column is a
 register-file READ) names the register that was read and the EARLIER row
@@ -66,6 +66,15 @@ program-counter divergence are not in the evidence but must pass too.
 - "its output never changes over the whole testcase although its inputs
   do": that gate is dead on every row; its kind is the first thing to
   question.
+- "LINE WITNESS": a storage element's address comes from a selector (a
+  priority encoder) whose input lines are driven by detector gates. The
+  stored words are trusted, so the passing rows prove which address holds
+  the expected word; the line that asserts on a row whose word lives
+  elsewhere — or stays silent on the row that needs it — names the broken
+  gate directly (the full finding, with the address and the line that
+  should select it, is in `suspects.notes`). Repair THAT gate: run the
+  gate-kind sanity check on its input values, and never touch the
+  encoder or the ROM.
 
 STORED DATA (ROM / LookUpTable) IS NEVER THE FIX: every ROM in a
 registered lab file was checked word for word against the official

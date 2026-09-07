@@ -147,10 +147,13 @@ def l3_propose(req: ProposeRequest) -> dict:
         if not result.get("proposals"):
             result["limits"] = limits.refund("modeB")
             result["refunded"] = True
-            result.setdefault("notes", []).append(
-                "No usable new tests this time — that can be a coach "
-                "limitation, not proof your tests are complete. Today's "
-                "Coverage Coach use was refunded.")
+            if result.get("all_categories_covered"):
+                note = "Today's Coverage Coach use was refunded."
+            else:
+                note = ("No usable new tests this time - that can be a "
+                        "coach limitation, not proof your tests are "
+                        "complete. Today's Coverage Coach use was refunded.")
+            result.setdefault("notes", []).append(note)
     try:
         from dlc.telemetry.sink import log_events
         log_events(req.session_id, [{

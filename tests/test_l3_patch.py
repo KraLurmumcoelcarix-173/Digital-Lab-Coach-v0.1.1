@@ -113,6 +113,50 @@ def test_rewire_pin_moves_a_sink_to_another_driver(tmp_path):
         os.unlink(temp)
 
 
+def _tunnel(name, x, y):
+    return f"""
+    <visualElement>
+      <elementName>Tunnel</elementName>
+      <elementAttributes>
+        <entry><string>NetName</string><string>{name}</string></entry>
+      </elementAttributes>
+      <pos x="{x}" y="{y}"/>
+    </visualElement>"""
+
+
+_TUNNEL_WIRES = """    <wire><p1 x="0" y="0"/><p2 x="40" y="0"/></wire>
+    <wire><p1 x="0" y="20"/><p2 x="40" y="20"/></wire>
+    <wire><p1 x="160" y="0"/><p2 x="200" y="0"/></wire>
+    <wire><p1 x="160" y="20"/><p2 x="200" y="20"/></wire>
+    <wire><p1 x="260" y="0"/><p2 x="300" y="0"/></wire>"""
+
+
+def test_rewire_pin_through_a_tunnel_stub_renames_the_stub(tmp_path):
+    src = tmp_path / "tunnels.dig"
+    src.write_text(_mini_circuit(
+        _TUNNEL_WIRES,
+        _tunnel("a", 40, 0) + _tunnel("b", 40, 20)
+        + _tunnel("a", 160, 0) + _tunnel("b", 160, 20)), encoding="utf-8")
+    before = parse_dig_file(str(src))
+    assert ("B", "out", "Comparator", "B") in _edges(str(src))
+    temp, report = apply_patch(str(src), [
+        {"op": "rewire_pin", "component_index": 2, "pin": "B",
+         "to": {"component_index": 0, "pin": "out"}},
+    ])
+    assert report.ok, report.warning
+    assert "tunnel [7] renamed 'b' -> 'a'" in report.applied[0]
+    try:
+        after = parse_dig_file(temp)
+        assert len(after.components) == len(before.components)
+        assert len(after.wires) == len(before.wires)
+        assert after.components[7].attributes["NetName"] == "a"
+        edges = _edges(temp)
+        assert ("A", "out", "Comparator", "B") in edges
+        assert ("B", "out", "Comparator", "B") not in edges
+    finally:
+        os.unlink(temp)
+
+
 def test_swap_pins_refuses_a_shared_junction(tmp_path):
     wires = _SIMPLE_WIRES + """
     <wire><p1 x="200" y="0"/><p2 x="200" y="-40"/></wire>"""
