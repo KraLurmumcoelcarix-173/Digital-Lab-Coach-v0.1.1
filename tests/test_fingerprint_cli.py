@@ -62,6 +62,70 @@ def test_bad_files_are_skipped_with_nonzero_exit(tmp_path, capsys):
     assert rc == 1
 
 
+_ROM_LAB = (
+    '<?xml version="1.0" encoding="utf-8"?><circuit><version>2</version>'
+    '<attributes/><visualElements>'
+    '<visualElement><elementName>In</elementName><elementAttributes>'
+    '<entry><string>Label</string><string>A</string></entry>'
+    '</elementAttributes><pos x="0" y="0"/></visualElement>'
+    '<visualElement><elementName>ROM</elementName><elementAttributes>'
+    '<entry><string>AddrBits</string><int>1</int></entry>'
+    '<entry><string>Bits</string><int>4</int></entry>%s'
+    '</elementAttributes><pos x="200" y="0"/></visualElement>'
+    '<visualElement><elementName>Out</elementName><elementAttributes>'
+    '<entry><string>Label</string><string>D</string></entry>'
+    '<entry><string>Bits</string><int>4</int></entry>'
+    '</elementAttributes><pos x="400" y="20"/></visualElement>'
+    '<visualElement><elementName>Testcase</elementName><elementAttributes>'
+    '<entry><string>Label</string><string>t</string></entry>'
+    '<entry><string>Testdata</string><testData><dataString>A D\n0 5\n1 6'
+    '</dataString></testData></entry>'
+    '</elementAttributes><pos x="0" y="200"/></visualElement>'
+    '</visualElements><wires/></circuit>'
+)
+
+
+def test_with_rom_registers_the_file_rom(tmp_path, capsys):
+    import base64
+    lab = tmp_path / "romlab.dig"
+    lab.write_text(_ROM_LAB % (
+        '<entry><string>Data</string><data>5,6</data></entry>'),
+        encoding="utf-8")
+    out = tmp_path / "entries.json"
+    assert fp.main([str(lab), _AND, "--with-rom", "-o", str(out)]) == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    entry = data["romlab.dig"]
+    assert set(entry) == {"content", "sha1", "runtime"}
+    assert json.loads(base64.b64decode(entry["runtime"])) == {"rom": "5,6"}
+    assert set(data["single_and.dig"]) == {"content", "sha1"}
+    err = capsys.readouterr().err
+    assert "ROM 2 words" in err and "no ROM" in err
+
+    empty = tmp_path / "emptyrom.dig"
+    empty.write_text(_ROM_LAB % "", encoding="utf-8")
+    assert fp.main([str(empty), "--with-rom", "-o", str(out)]) == 1
+    assert "SKIPPED emptyrom.dig" in capsys.readouterr().err
+
+    defaults = tmp_path / "defaults.json"
+    defaults.write_text(json.dumps({
+        "_note": "keep me",
+        "other.dig": {"content": "X Y\n0 0", "sha1": "1" * 40,
+                      "runtime": "keepblob"},
+        "romlab.dig": {"content": "old", "sha1": "2" * 40,
+                       "runtime": "oldblob"},
+    }), encoding="utf-8")
+    assert fp.main([str(lab), "--merge", str(defaults)]) == 0
+    merged = json.loads(defaults.read_text(encoding="utf-8"))
+    assert merged["_note"] == "keep me"
+    assert merged["other.dig"]["runtime"] == "keepblob"
+    assert merged["romlab.dig"]["content"] == entry["content"]
+    assert merged["romlab.dig"]["runtime"] == "oldblob"
+    assert fp.main([str(lab), "--with-rom", "--merge", str(defaults)]) == 0
+    merged = json.loads(defaults.read_text(encoding="utf-8"))
+    assert merged["romlab.dig"]["runtime"] == entry["runtime"]
+    assert "merged 1 entry" in capsys.readouterr().err
+
+
 def test_runs_as_a_module():
     r = subprocess.run([sys.executable, "-m", "dlc.fingerprint", _AND],
                        capture_output=True, text=True, timeout=60)

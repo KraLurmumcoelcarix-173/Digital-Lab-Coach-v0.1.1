@@ -532,9 +532,9 @@ def _touches_stored_data(ops_lists: list[list[dict]],
 
 _ROM_NOTE = (
     "\n\n[ROM NOTE]\n"
-    "The instruction-memory ROM in this circuit holds the official course "
-    "program, checked word for word before this run. Those stored words "
-    "are correct by definition — never propose a Data change on that ROM "
+    "The ROM(s) in this circuit hold the official contents registered for "
+    "this lab, checked word for word before this run. Those stored words "
+    "are correct by definition - never propose a Data change on them "
     "(such a change is stripped before verification); the failing rows "
     "come from wiring, selects, or other components."
 )
@@ -611,7 +611,7 @@ def dedupe_hypotheses(hyps: list[dict]) -> list[dict]:
     return sorted(by_ops.values(), key=_rank_key)
 
 
-def _protected_program_memory(circuit, source_name: str | None) -> set[int]:
+def _protected_roms(circuit, source_name: str | None) -> set[int]:
     if circuit is None or not source_name:
         return set()
     base = Path(str(source_name)).name
@@ -630,10 +630,10 @@ def _protected_program_memory(circuit, source_name: str | None) -> set[int]:
     return flagged or set(roms)
 
 
-_PROGMEM_STUDENT_NOTE = (
-    "A proposed rewrite of the instruction memory was dropped: it already "
-    "holds the course program, and the coach never edits it — the bug is "
-    "in the datapath."
+_ROM_STUDENT_NOTE = (
+    "A proposed rewrite of a ROM was dropped: it already holds the "
+    "official contents registered for this lab, and the coach never edits "
+    "it - the bug is elsewhere."
 )
 
 
@@ -774,7 +774,7 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
             notes.append(f"Digital runner failed ({type(exc).__name__}); "
                          "falling back to the built-in evaluator.")
 
-    progmem = _protected_program_memory(circuit,
+    progmem = _protected_roms(circuit,
                                         source_filename or dig_path)
     evres = ev.assemble_evidence(
         circuit, netlist, graph, spec, manifest=manifest,
@@ -872,8 +872,8 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
                 return False
             kept = [op for op in ops2 if not _smuggles_program(op)]
             if len(kept) != len(ops2):
-                if _PROGMEM_STUDENT_NOTE not in notes:
-                    notes.append(_PROGMEM_STUDENT_NOTE)
+                if _ROM_STUDENT_NOTE not in notes:
+                    notes.append(_ROM_STUDENT_NOTE)
                 ops2 = kept
         if not ops2:
             return None
@@ -933,8 +933,8 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
         clean = norm(clean)
         if clean is None:
             dropped.append({"cluster_rows": cluster_rows,
-                            "reason": "program_memory_protected",
-                            "detail": _PROGMEM_STUDENT_NOTE})
+                            "reason": "rom_protected",
+                            "detail": _ROM_STUDENT_NOTE})
             continue
 
         verdict = verify(clean["ops"], cluster_rows + consequences)

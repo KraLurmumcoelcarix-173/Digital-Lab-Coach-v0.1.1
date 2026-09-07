@@ -79,8 +79,6 @@ def test_clear_and_lazy_are_free(monkeypatch):
 
 
 def test_enforced_cap_blocks_the_fourth_run(monkeypatch):
-    from dlc.l3 import limits
-    monkeypatch.setitem(limits.CAPS, "modeA", 3)
     sid = _upload_bug3()
     monkeypatch.setattr(debugger, "debug_circuit",
                         _canned("analysis", [{"rank": 1}]))
@@ -257,8 +255,8 @@ def _upload_romlab(rom_data):
     return r.json()["session_id"]
 
 
-def test_rom_gate_refuses_empty_or_wrong_program_for_free(monkeypatch,
-                                                          tmp_path):
+def test_rom_gate_refuses_empty_or_wrong_rom_for_free(monkeypatch,
+                                                      tmp_path):
     import json as _json
     monkeypatch.setenv("DLC_OFFICIAL_DEFAULTS_PATH",
                        str(_rom_lab_defaults(tmp_path)))
@@ -273,14 +271,15 @@ def test_rom_gate_refuses_empty_or_wrong_program_for_free(monkeypatch,
         assert body["consumed_use"] is False and body["llm_calls"] == 0
         assert body["rom_verified"] is False
         assert (body["limits"]["used"] or {}).get("modeA", 0) == 0
-        assert "course program" in body["message"]
+        assert "official contents" in body["message"]
+        assert body["rom_check"]["file"] == "romlab.dig"
         assert "5,6" not in _json.dumps(body)
     assert fake.calls == []
     assert body["rom_check"]["first_bad_address"] == 1
     assert "your word there is 7" in body["message"]
 
 
-def test_rom_gate_lets_the_course_program_through(monkeypatch, tmp_path):
+def test_rom_gate_lets_matching_contents_through(monkeypatch, tmp_path):
     monkeypatch.setenv("DLC_OFFICIAL_DEFAULTS_PATH",
                        str(_rom_lab_defaults(tmp_path)))
     fake = _canned("analysis", [{"rank": 1}])
@@ -339,13 +338,10 @@ _ROM_LAB = (
 )
 
 
-def test_accept_fix_rerun_runs_with_injected_rom(monkeypatch, tmp_path):
+def test_accept_fix_rerun_never_fills_a_rom(monkeypatch, tmp_path):
     monkeypatch.setenv("DLC_OFFICIAL_DEFAULTS_PATH",
                        str(_rom_lab_defaults(tmp_path)))
-    r = client.post("/api/circuit", files=[
-        ("files", ("romlab.dig", _ROM_LAB.encode(), "application/xml"))])
-    assert r.status_code == 200
-    sid = r.json()["session_id"]
+    sid = _upload_romlab(None)
 
     noop = [{"op": "change_attribute", "component_index": 3,
              "name": "Label", "value": "D"}]
@@ -353,7 +349,13 @@ def test_accept_fix_rerun_runs_with_injected_rom(monkeypatch, tmp_path):
         "session_id": sid, "filename": "romlab.dig", "ops": noop,
     }).json()
     assert body["ok"] is True
-    assert body["all_passed"] is True, body
-    assert any("course program" in n for n in body.get("injected", []))
+    assert body["all_passed"] is False, body
+    assert not any("ROM" in n for n in body.get("injected", []))
     lt = server._SESSIONS[sid]["l3_temp"]
     assert "5,6" not in open(lt["path"], encoding="utf-8").read()
+
+    sid2 = _upload_romlab("5,6")
+    body2 = client.post("/api/l3/accept_fix", json={
+        "session_id": sid2, "filename": "romlab.dig", "ops": noop,
+    }).json()
+    assert body2["ok"] is True and body2["all_passed"] is True, body2

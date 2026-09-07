@@ -44,10 +44,9 @@ the accepted rows, plus any earlier accepted fix. When the file's testcase
 is missing, header-only or modified and an official test set exists for
 the filename, the run targets a sibling injected temp carrying the
 official rows (`dlc/testing/inject.prepare_injected_run`). ROM contents
-are never injected in Mode A: when the official store holds a course
-program for the filename, the file's instruction memory must already
-contain it (the ROM gate, §2). The circuit cannot be switched inside
-Layer 3.
+are never injected anywhere: a file whose filename has registered ROM
+contents must already hold them (the ROM gate, §2). The circuit cannot
+be switched inside Layer 3.
 
 ## 2. Coordinator pipeline (deterministic, server-side)
 
@@ -59,14 +58,15 @@ Gates before any evidence, in order:
    temp has failing accepted rows).
 2. **Transistor guard.** A tree containing switch-level elements returns
    `{"ok": false, "unsupported": true, "mode": "unsupported", "cards": []}`.
-3. **ROM gate.** When the official store holds a course program for the
-   filename (`get_runtime_payload(filename, "rom")`),
-   `dlc/testing/inject.check_program_rom` compares the file's instruction
-   memory with it word for word (the ROMs marked Program Memory, else
-   every ROM; formatting, case, `n*word` shorthand and trailing zero words
-   do not matter). Empty, different or missing ROM → `mode:
-   "rom_mismatch"` with the fixed `message` and `rom_check`, no model
-   call, no daily use consumed (§6). The words never leave the server.
+3. **ROM gate.** `dlc/testing/inject.check_rom_contents` walks the file
+   and every subcircuit file under it; for each filename with registered
+   ROM contents (`get_runtime_payload(filename, "rom")`) it compares the
+   file's ROM word for word (the ROMs marked Program Memory, else every
+   ROM; formatting, case, `n*word` shorthand and trailing zero words do
+   not matter). Any empty, different or missing ROM → `mode:
+   "rom_mismatch"` with the fixed `message` and `rom_check` (which names
+   the file), no model call, no daily use consumed (§6). The registered
+   words never leave the server.
 4. **Daily cap.** `limits.allowed("modeA")` — only enforced when
    `DLC_ENFORCE_LIMITS` is on (§10); otherwise `{"ok": false,
    "limited": true, "warning": ..., "limits": ...}`.
@@ -220,8 +220,8 @@ Evidence stage (`assemble_evidence`):
   (Bits, Value, Selector Bits, splitting ranges, inputBits/outputBits,
   Signed, …). Storage records add `data_words_stored`, either a
   `data_note` (empty Data, with the exact op to program it) or
-  `stored_words` (32 words or fewer, hidden when the run used the
-  injected course program), `address_by_row`, `address_input_drivers`,
+  `stored_words` (32 words or fewer, hidden when the file has registered
+  ROM contents), `address_by_row`, `address_input_drivers`,
   `output_bit_map` and `expected_outputs_by_row`.
 - Nothing is sent twice: net values carry `hex` and `bits` only (the
   decimal duplicate stays server-side), null-valued suspect fields and
@@ -232,11 +232,10 @@ Evidence stage (`assemble_evidence`):
   `suspect_wiring`; the run notes say so.
 
 The prompt is `prompts/l3_modeA_hypothesis_v1.txt` with `<<PAYLOAD_JSON>>`
-replaced. Appended blocks: `[ROM NOTE]` when the official store holds a
-course program for the filename (the ROM gate has verified that the
-file's instruction memory holds it word for word; Data changes on that
-ROM are stripped before verification and its words stay out of the
-payload); `# FORMAT RETRY` after a reply that is not the
+replaced. Appended blocks: `[ROM NOTE]` when the filename has registered
+ROM contents (the ROM gate has verified them word for word; Data changes
+on those ROMs are stripped before verification and their words stay out
+of the payload); `# FORMAT RETRY` after a reply that is not the
 strict JSON object (once); `[REFUTED ATTEMPT]` after a refuted fix (once
 per cluster) with the re-run's still-failing and regressed rows, a
 partial-fix steer when the refuted ops repaired some cluster rows, and a
@@ -327,10 +326,10 @@ For each reply, in order:
 
 1. **Normalize.** A `Data` rewrite aimed at a component that is not the
    circuit's single storage element is redirected to that element (noted
-   in the run). Data changes on the course-program ROM (the ROMs marked
-   Program Memory, else every ROM, of a file whose filename has a
-   registered course program) are stripped; a reply left with no ops is
-   dropped as `program_memory_protected`.
+   in the run). Data changes on a registered ROM (the ROMs marked
+   Program Memory, else every ROM, of a file whose filename has
+   registered ROM contents) are stripped; a reply left with no ops is
+   dropped as `rom_protected`.
 2. **Apply** (`apply_patch`): unknown op → fail; the patched temp is
    written next to the source (so children resolve); it must re-parse and
    must not add Layer-1 errors compared with the original (the L1
@@ -365,7 +364,7 @@ For each reply, in order:
    top 3 confirmed become cards. Every other hypothesis lands in
    `dropped_ideas` with a reason: `refuted`, `patch_failed`,
    `beyond_top_k`, `invalid_response`, `llm_error`,
-   `program_memory_protected`. With no card at all, the best-ranked
+   `rom_protected`. With no card at all, the best-ranked
    unverified hypothesis is returned as `best_unverified`.
 
 ## 6. Response (server → client)
@@ -396,7 +395,7 @@ For each reply, in order:
   "verify_runner": "digital",
   "usage": {"input_tokens": 0, "output_tokens": 0}, "llm_calls": 1,
   "injected": ["..."], "rom_verified": false,
-  "limits": {"date": "...", "caps": {"modeA": 100, "modeB": 2}, "used": {}, "remaining": {}},
+  "limits": {"date": "...", "caps": {"modeA": 1, "modeB": 2}, "used": {}, "remaining": {}},
   "consumed_use": true, "on_coach_temp": false
 }
 ```
@@ -405,12 +404,12 @@ Other modes: `"clear"` (every row passes; `message`), `"lazy"`
 (`gross_flags` plus `suggestions[]` — question, hint and Layer-2 library
 `terms` per flag; no cards, no ops), `"rom_mismatch"` (the ROM gate:
 `message` is the fixed verdict and `rom_check` carries `status`
-(`empty`, `mismatch` or `missing`), `rom`, `component_index`,
+(`empty`, `mismatch` or `missing`), `file`, `rom`, `component_index`,
 `words_expected`, `words_found`, `differing` and `first_bad_address`; no
 model call, `llm_calls: 0`), `"error"` (`ok: false`, `warning`),
 `"unsupported"` (transistor labs). The route adds `injected` (official-row
-injection notes), `rom_verified` (true when the filename has a registered
-course program and the gate passed), `limits`, `consumed_use` and
+injection notes), `rom_verified` (true when the filename has registered
+ROM contents and the gate passed), `limits`, `consumed_use` and
 `on_coach_temp`. A run consumes a daily use only when it is an analysis
 that delivers at least one card.
 
@@ -465,7 +464,7 @@ llm_calls, in_tokens, out_tokens, model, rom_verified, consumed_use}` ·
 
 ## 10. Limits and model selection
 
-`CAPS = {"modeA": 100, "modeB": 2}` runs per day per machine in
+`CAPS = {"modeA": 1, "modeB": 2}` runs per day per machine in
 `dlc/l3/limits.py`, stored in `~/.dlc/limits.json` (or `DLC_LIMITS_PATH`),
 enforced only when `DLC_ENFORCE_LIMITS` is set (the release launchers set
 it; a developer checkout runs uncapped). A Mode A use is consumed only by

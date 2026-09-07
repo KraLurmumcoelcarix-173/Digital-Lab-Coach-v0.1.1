@@ -1,6 +1,6 @@
 # Configuring DLC for your own lab (instructor guide)
 
-Related: ROM payloads — `instructor_rom_config.md`; course proxy —
+Related: ROM contents — `instructor_rom_config.md`; course proxy —
 `../proxy/README.md`.
 
 DLC works on any Digital (`.dig`) circuit with **zero configuration**:
@@ -25,10 +25,12 @@ wiring, no solution content ever goes in it.
    filename + the testcase rows (header line plus data rows, as in
    Digital's test editor). Comments and spacing do not matter; changed
    rows do.
-2. **Ship them as defaults** (forks): generate the entries from the
-   `.dig` files and merge them into `data/official_tests_defaults.json`:
+2. **Ship them as defaults** (forks): generate the entries from your
+   instructor copies of the `.dig` files and merge them into
+   `data/official_tests_defaults.json`; `--with-rom` also registers each
+   file's ROM contents (`instructor_rom_config.md`):
 
-       uv run python -m dlc.fingerprint cpu.dig register-file.dig -o defaults.json
+       uv run python -m dlc.fingerprint cpu.dig register-file.dig --with-rom --merge data/official_tests_defaults.json
 
 3. **Write the manifest**: copy `data/manifests/tier3_latched_display.json`
    (a display lab) or `cpu_new.json` (a RISC-V CPU) and edit the blocks

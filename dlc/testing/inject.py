@@ -61,39 +61,6 @@ def _replace_testcases(root: ET.Element, content: str) -> bool:
     return True
 
 
-def _fill_empty_roms(root: ET.Element, data: str) -> int:
-    if not (data or "").strip():
-        return 0
-    filled = 0
-    for ve in root.iter("visualElement"):
-        if ve.findtext("elementName") != "ROM":
-            continue
-        entries = _entry_map(ve)
-        cur = entries.get("Data")
-        if cur is not None and (cur.text or "").strip():
-            continue
-        attrs = ve.find("elementAttributes")
-        if attrs is None:
-            attrs = ET.SubElement(ve, "elementAttributes")
-        if cur is None:
-            entry = ET.SubElement(attrs, "entry")
-            ET.SubElement(entry, "string").text = "Data"
-            ET.SubElement(entry, "data").text = data
-        else:
-            cur.text = data
-        filled += 1
-    return filled
-
-
-def _entry_map(element: ET.Element) -> dict[str, ET.Element]:
-    out: dict[str, ET.Element] = {}
-    for entry in element.findall("./elementAttributes/entry"):
-        kids = list(entry)
-        if len(kids) == 2 and kids[0].tag == "string" and kids[0].text:
-            out[kids[0].text] = kids[1]
-    return out
-
-
 def _data_words(raw, fmt: str = "hex") -> list[int]:
     base = {"hex": 16, "bin": 2, "oct": 8, "dec": 10, "def": 10}.get(
         str(fmt or "hex").lower(), 16)
@@ -122,7 +89,7 @@ def _data_words(raw, fmt: str = "hex") -> list[int]:
     return words
 
 
-def _program_roms(circuit) -> list[int]:
+def _checked_roms(circuit) -> list[int]:
     roms = [i for i, c in enumerate(circuit.components)
             if c.element_name == "ROM"]
     flagged = [i for i in roms
@@ -132,61 +99,85 @@ def _program_roms(circuit) -> list[int]:
 
 ROM_GATE_MESSAGES = {
     "missing": (
-        "This lab runs the course program from an instruction-memory ROM, "
-        "but this file has no ROM. Add the ROM (Program Memory checked), "
-        "enter the course program, run the tests again, then come back."),
+        "{file} is registered with official ROM contents for this lab, "
+        "but the file has no ROM. Add the ROM, enter the official "
+        "contents, run the tests again, then come back."),
     "empty": (
-        "ROM '{rom}' is empty, so the circuit has no program to run. Enter "
-        "the course program into the ROM (double-click it in Digital), run "
+        "ROM '{rom}' in {file} is empty. Enter the official contents "
+        "registered for this lab (double-click the ROM in Digital), run "
         "the tests again, then come back."),
     "mismatch": (
-        "ROM '{rom}' does not hold the course program: {differing} of "
-        "{expected} words differ, first at address {address} (your word "
-        "there is {word}). Fix the ROM contents before debugging the "
-        "datapath — with the wrong program every row can fail for the "
-        "wrong reason."),
+        "ROM '{rom}' in {file} does not hold the official contents "
+        "registered for this lab: {differing} of {expected} words differ, "
+        "first at address {address} (your word there is {word}). Fix the "
+        "ROM before debugging — with the wrong contents every row can "
+        "fail for the wrong reason."),
 }
 
 
-def check_program_rom(path: str, filename: str) -> dict | None:
+def _plain_name(filename) -> str:
+    base = os.path.basename(str(filename or ""))
+    if base.startswith(".dlc_injected__"):
+        base = base[len(".dlc_injected__"):]
+    return base
+
+
+def _check_one(circuit, filename: str, official: str) -> dict | None:
+    want = _data_words(official, "hex")
+    roms = _checked_roms(circuit)
+    if not roms:
+        return {"status": "missing", "file": filename,
+                "words_expected": len(want),
+                "message": ROM_GATE_MESSAGES["missing"].format(file=filename)}
+    for idx in roms:
+        comp = circuit.components[idx]
+        name = comp.label or f"ROM[{idx}]"
+        got = _data_words(comp.attributes.get("Data", ""),
+                          comp.attributes.get("intFormat", "hex"))
+        info = {"file": filename, "rom": name, "component_index": idx,
+                "words_expected": len(want), "words_found": len(got)}
+        if not got:
+            return {"status": "empty", **info,
+                    "message": ROM_GATE_MESSAGES["empty"].format(
+                        file=filename, rom=name)}
+        if got != want:
+            span = max(len(got), len(want))
+            bad = [a for a in range(span)
+                   if (got[a] if a < len(got) else 0)
+                   != (want[a] if a < len(want) else 0)]
+            first = bad[0]
+            word = got[first] if first < len(got) else 0
+            return {"status": "mismatch", **info,
+                    "differing": len(bad), "first_bad_address": first,
+                    "message": ROM_GATE_MESSAGES["mismatch"].format(
+                        file=filename, rom=name, differing=len(bad),
+                        expected=len(want), address=first,
+                        word=f"{word:x}")}
+    return None
+
+
+def check_rom_contents(path: str, filename: str) -> dict | None:
     try:
         from dlc.l3.official_store import get_runtime_payload
         from dlc.parser.dig_parser import parse_dig_file
 
-        base = os.path.basename(str(filename or ""))
-        if base.startswith(".dlc_injected__"):
-            base = base[len(".dlc_injected__"):]
-        official = get_runtime_payload(base, "rom")
-        if not official:
-            return None
-        want = _data_words(official, "hex")
-        circuit = parse_dig_file(path)
-        roms = _program_roms(circuit)
-        if not roms:
-            return {"status": "missing", "words_expected": len(want),
-                    "message": ROM_GATE_MESSAGES["missing"]}
-        for idx in roms:
-            comp = circuit.components[idx]
-            name = comp.label or f"ROM[{idx}]"
-            got = _data_words(comp.attributes.get("Data", ""),
-                              comp.attributes.get("intFormat", "hex"))
-            info = {"rom": name, "component_index": idx,
-                    "words_expected": len(want), "words_found": len(got)}
-            if not got:
-                return {"status": "empty", **info,
-                        "message": ROM_GATE_MESSAGES["empty"].format(rom=name)}
-            if got != want:
-                span = max(len(got), len(want))
-                bad = [a for a in range(span)
-                       if (got[a] if a < len(got) else 0)
-                       != (want[a] if a < len(want) else 0)]
-                first = bad[0]
-                word = got[first] if first < len(got) else 0
-                return {"status": "mismatch", **info,
-                        "differing": len(bad), "first_bad_address": first,
-                        "message": ROM_GATE_MESSAGES["mismatch"].format(
-                            rom=name, differing=len(bad), expected=len(want),
-                            address=first, word=f"{word:x}")}
+        queue = [(parse_dig_file(path), _plain_name(filename))]
+        seen: set[str] = set()
+        while queue:
+            circuit, name = queue.pop(0)
+            if name in seen:
+                continue
+            seen.add(name)
+            official = get_runtime_payload(name, "rom")
+            if official:
+                verdict = _check_one(circuit, name, official)
+                if verdict is not None:
+                    return verdict
+            for sub in circuit.subcircuits:
+                ref = getattr(sub, "reference", None)
+                child = getattr(sub, "child_circuit", None)
+                if ref and child is not None:
+                    queue.append((child, _plain_name(ref)))
         return None
     except Exception:
         return None
@@ -195,7 +186,6 @@ def check_program_rom(path: str, filename: str) -> dict | None:
 def prepare_injected_run(path: str, filename: str) -> tuple[str | None, list[str]]:
     try:
         from dlc.parser.dig_parser import parse_dig_file
-        from dlc.l3.official_store import get_runtime_payload
 
         circuit = parse_dig_file(path)
         status = file_test_status(circuit, filename)
@@ -218,19 +208,6 @@ def prepare_injected_run(path: str, filename: str) -> tuple[str | None, list[str
                         "official testcase injected in place of this "
                         "file's modified testcase (Gradescope grades "
                         "with the official tests)")
-
-        rom_data = get_runtime_payload(filename, "rom")
-        if rom_data:
-            n = _fill_empty_roms(root, rom_data)
-            if n:
-                changed = True
-                plural = "s" if n != 1 else ""
-                notes.append(
-                    f"the course program was loaded into {n} empty "
-                    f"ROM{plural} for this test run so your logic could be "
-                    f"tested — your file still has the ROM unprogrammed; "
-                    f"enter the course program before submitting (the "
-                    f"debugger only runs once the ROM holds it)")
 
         if not changed:
             return None, []

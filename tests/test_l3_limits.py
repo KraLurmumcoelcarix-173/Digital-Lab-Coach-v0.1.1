@@ -37,7 +37,7 @@ def test_counters_tick_even_when_unenforced():
 def test_enforced_blocks_at_cap(monkeypatch):
     monkeypatch.setenv("DLC_ENFORCE_LIMITS", "1")
     assert limits.allowed("modeA") is True
-    for _ in range(limits.CAPS["modeA"]):
+    for _ in range(3):
         limits.consume("modeA")
     assert limits.allowed("modeA") is False
     assert limits.allowed("modeB") is True

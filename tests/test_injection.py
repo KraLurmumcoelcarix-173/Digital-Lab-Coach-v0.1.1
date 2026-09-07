@@ -70,7 +70,7 @@ def test_defaults_expose_cpu_testcase_and_hidden_runtime():
     assert "fec00213" not in open(defaults_path).read()
     rom = official_store.get_runtime_payload("cpu.dig", "rom")
     assert rom and rom.startswith("fec00213")
-    assert official_store.get_runtime_payload("control-unit.dig", "rom") is None
+    assert official_store.get_runtime_payload("mystery.dig", "rom") is None
     assert "fec00213" not in json.dumps(official_store.list_tests())
     assert "runtime" not in json.dumps(official_store.list_tests())
 
@@ -115,8 +115,9 @@ def test_injects_official_testcase_when_missing(tmp_path):
             for e in ve.iter("entry")
             if len(kids := list(e)) == 2 and kids[0].text == "Data"
         ]
-        assert any((d or "").startswith("fec00213") for d in datas)
-        assert any("course program was loaded" in n for n in notes)
+        assert not any((d or "").strip() for d in datas), \
+            "a ROM must never be filled"
+        assert len(notes) == 1
         assert p.read_text(encoding="utf-8") == before
     finally:
         cleanup_injected(temp)
@@ -141,20 +142,12 @@ def test_injects_official_testcase_when_modified(tmp_path):
         cleanup_injected(temp)
 
 
-def test_official_testcase_kept_but_empty_rom_still_filled(tmp_path):
+def test_no_temp_when_tests_official_even_with_an_empty_rom(tmp_path):
     p = tmp_path / "cpu.dig"
     p.write_text(_with_testcase(official_store.get_content("cpu.dig")),
                  encoding="utf-8")
     temp, notes = prepare_injected_run(str(p), "cpu.dig")
-    try:
-        assert temp and len(notes) == 1
-        assert "course program was loaded" in notes[0]
-        root = ET.parse(temp).getroot()
-        tcs = [ve for ve in root.iter("visualElement")
-               if ve.findtext("elementName") == "Testcase"]
-        assert len(tcs) == 1
-    finally:
-        cleanup_injected(temp)
+    assert temp is None and notes == []
 
 
 def test_no_injection_when_tests_official_and_rom_programmed(tmp_path):
@@ -214,44 +207,122 @@ def _cpu_with_rom(data):
 
 def test_rom_gate_verdicts(tmp_path):
     import re
-    from dlc.testing.inject import check_program_rom
+    from dlc.testing.inject import check_rom_contents
 
     official = official_store.get_runtime_payload("cpu.dig", "rom")
     n_official = len(official.split(","))
     p = tmp_path / "cpu.dig"
 
     p.write_text(_cpu_with_rom(None), encoding="utf-8")
-    v = check_program_rom(str(p), "cpu.dig")
+    v = check_rom_contents(str(p), "cpu.dig")
     assert v["status"] == "empty" and v["rom"] == "Instruction Memory"
+    assert v["file"] == "cpu.dig"
     assert v["words_expected"] == n_official and v["words_found"] == 0
-    assert "no program to run" in v["message"]
+    assert "in cpu.dig is empty" in v["message"]
 
     p.write_text(_cpu_with_rom("1,2,3"), encoding="utf-8")
-    v = check_program_rom(str(p), "cpu.dig")
+    v = check_rom_contents(str(p), "cpu.dig")
     assert v["status"] == "mismatch" and v["first_bad_address"] == 0
     assert v["words_found"] == 3 and v["differing"] == n_official
     assert "your word there is 1" in v["message"]
     assert official.split(",")[0] not in v["message"]
 
     p.write_text(_cpu_with_rom(official), encoding="utf-8")
-    assert check_program_rom(str(p), "cpu.dig") is None
-    assert check_program_rom(str(p), ".dlc_injected__cpu.dig") is None
-    assert check_program_rom(str(p), "mystery.dig") is None
+    assert check_rom_contents(str(p), "cpu.dig") is None
+    assert check_rom_contents(str(p), ".dlc_injected__cpu.dig") is None
+    assert check_rom_contents(str(p), "mystery.dig") is None
 
     p.write_text(_cpu_with_rom(official.upper() + ",0,0"), encoding="utf-8")
-    assert check_program_rom(str(p), "cpu.dig") is None
+    assert check_rom_contents(str(p), "cpu.dig") is None
 
     q = tmp_path / "norom.dig"
     q.write_text(re.sub(r"<visualElement>\s*<elementName>ROM</elementName>"
                         r".*?</visualElement>\s*", "", _EMPTY_CPU,
                         flags=re.S), encoding="utf-8")
-    v = check_program_rom(str(q), "cpu.dig")
-    assert v["status"] == "missing" and "no ROM" in v["message"]
-    assert check_program_rom(str(tmp_path / "absent.dig"), "cpu.dig") is None
+    v = check_rom_contents(str(q), "cpu.dig")
+    assert v["status"] == "missing" and "has no ROM" in v["message"]
+    assert v["file"] == "cpu.dig"
+    assert check_rom_contents(str(tmp_path / "absent.dig"), "cpu.dig") is None
+
+
+_CHILD_ROM_LAB = (
+    '<?xml version="1.0" encoding="utf-8"?><circuit><version>2</version>'
+    '<attributes/><visualElements>'
+    '<visualElement><elementName>In</elementName><elementAttributes>'
+    '<entry><string>Label</string><string>A</string></entry>'
+    '</elementAttributes><pos x="0" y="0"/></visualElement>'
+    '<visualElement><elementName>ROM</elementName><elementAttributes>'
+    '<entry><string>AddrBits</string><int>1</int></entry>'
+    '<entry><string>Bits</string><int>4</int></entry>%s'
+    '</elementAttributes><pos x="200" y="0"/></visualElement>'
+    '<visualElement><elementName>Out</elementName><elementAttributes>'
+    '<entry><string>Label</string><string>D</string></entry>'
+    '<entry><string>Bits</string><int>4</int></entry>'
+    '</elementAttributes><pos x="400" y="20"/></visualElement>'
+    '</visualElements><wires>'
+    '<wire><p1 x="0" y="0"/><p2 x="200" y="0"/></wire>'
+    '<wire><p1 x="260" y="20"/><p2 x="400" y="20"/></wire>'
+    '</wires></circuit>'
+)
+
+_PARENT_OF_ROM_LAB = (
+    '<?xml version="1.0" encoding="utf-8"?><circuit><version>2</version>'
+    '<attributes/><visualElements>'
+    '<visualElement><elementName>In</elementName><elementAttributes>'
+    '<entry><string>Label</string><string>A</string></entry>'
+    '</elementAttributes><pos x="0" y="0"/></visualElement>'
+    '<visualElement><elementName>romlab.dig</elementName>'
+    '<elementAttributes/><pos x="200" y="0"/></visualElement>'
+    '<visualElement><elementName>Out</elementName><elementAttributes>'
+    '<entry><string>Label</string><string>D</string></entry>'
+    '<entry><string>Bits</string><int>4</int></entry>'
+    '</elementAttributes><pos x="400" y="0"/></visualElement>'
+    '<visualElement><elementName>Testcase</elementName><elementAttributes>'
+    '<entry><string>Label</string><string>t</string></entry>'
+    '<entry><string>Testdata</string><testData><dataString>A D\n0 5'
+    '</dataString></testData></entry>'
+    '</elementAttributes><pos x="0" y="200"/></visualElement>'
+    '</visualElements><wires/></circuit>'
+)
+
+
+def test_rom_gate_walks_the_subcircuit_tree(tmp_path, monkeypatch):
+    import base64
+    from dlc.testing.inject import check_rom_contents
+
+    defaults = {"romlab.dig": {
+        "content": "A D\n0 5\n1 6", "sha1": "0" * 40,
+        "runtime": base64.b64encode(
+            json.dumps({"rom": "5,6"}).encode()).decode()}}
+    (tmp_path / "defaults.json").write_text(json.dumps(defaults),
+                                            encoding="utf-8")
+    monkeypatch.setenv("DLC_OFFICIAL_DEFAULTS_PATH",
+                       str(tmp_path / "defaults.json"))
+    parent = tmp_path / "top.dig"
+    parent.write_text(_PARENT_OF_ROM_LAB, encoding="utf-8")
+    child = tmp_path / "romlab.dig"
+
+    child.write_text(_CHILD_ROM_LAB % "", encoding="utf-8")
+    v = check_rom_contents(str(parent), "top.dig")
+    assert v["status"] == "empty" and v["file"] == "romlab.dig"
+    assert "in romlab.dig is empty" in v["message"]
+
+    child.write_text(_CHILD_ROM_LAB % (
+        '<entry><string>Data</string><data>5,7</data></entry>'),
+        encoding="utf-8")
+    v = check_rom_contents(str(parent), "top.dig")
+    assert v["status"] == "mismatch" and v["file"] == "romlab.dig"
+    assert v["first_bad_address"] == 1
+
+    child.write_text(_CHILD_ROM_LAB % (
+        '<entry><string>Data</string><data>5,6</data></entry>'),
+        encoding="utf-8")
+    assert check_rom_contents(str(parent), "top.dig") is None
+    assert check_rom_contents(str(child), "romlab.dig") is None
 
 
 def test_rom_gate_checks_only_the_program_memory_when_flagged(tmp_path):
-    from dlc.testing.inject import check_program_rom
+    from dlc.testing.inject import check_rom_contents
 
     official = official_store.get_runtime_payload("cpu.dig", "rom")
     flagged = _cpu_with_rom(official).replace(
@@ -269,12 +340,12 @@ def test_rom_gate_checks_only_the_program_memory_when_flagged(tmp_path):
     )
     p = tmp_path / "cpu.dig"
     p.write_text(flagged, encoding="utf-8")
-    assert check_program_rom(str(p), "cpu.dig") is None
+    assert check_rom_contents(str(p), "cpu.dig") is None
 
     p.write_text(flagged.replace(
         "<entry><string>isProgramMemory</string><boolean>true</boolean></entry>",
         ""), encoding="utf-8")
-    v = check_program_rom(str(p), "cpu.dig")
+    v = check_rom_contents(str(p), "cpu.dig")
     assert v["status"] == "empty" and v["rom"] == "lookup"
 
 

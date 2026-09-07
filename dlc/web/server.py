@@ -323,18 +323,11 @@ async def circuit(files: list[UploadFile] = File(...)) -> dict:
                     for iss in issues_payload:
                         if iss.get("kind") != "empty_rom" or iss.get("scope"):
                             continue
-                        idxs = iss.get("component_indices") or []
-                        if not any(c.components[i].attributes.get(
-                                "isProgramMemory") for i in idxs
-                                if 0 <= i < len(c.components)):
-                            continue
                         iss["message"] += (
-                            " NOTE: for test runs and grading, the "
-                            "official course program is loaded into "
-                            "this ROM automatically — that is why "
-                            "tests can pass. Enter the course program "
-                            "yourself before submitting; the Layer 3 "
-                            "debugger only runs once the ROM holds it.")
+                            " NOTE: this lab registers the official "
+                            "contents of this ROM. Enter them before "
+                            "submitting — the Layer 3 debugger refuses "
+                            "to run until the ROM matches.")
             except Exception:
                 pass
             results.append({

@@ -366,7 +366,7 @@ def llm_debug(req: DebugRequest) -> dict:
     from dlc.l3 import debugger
     from dlc.l3.official_store import get_runtime_payload
     from dlc.testing.inject import (
-        check_program_rom, prepare_injected_run, cleanup_injected,
+        check_rom_contents, prepare_injected_run, cleanup_injected,
     )
     from dlc.web import server
 
@@ -384,7 +384,7 @@ def llm_debug(req: DebugRequest) -> dict:
         path, spec_name, on_temp = lt["path"], lt.get("spec_name"), True
         coach_rows = lt.get("coach_rows") or None
 
-    gate = check_program_rom(path, req.filename)
+    gate = check_rom_contents(path, req.filename)
     if gate is not None:
         result = _rom_gate_result(gate, req.model, on_temp)
         _log_modeA_result(req.session_id, req.filename, result)

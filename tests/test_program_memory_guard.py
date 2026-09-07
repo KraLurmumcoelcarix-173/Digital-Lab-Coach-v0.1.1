@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from dlc.l3 import debugger
-from dlc.l3.debugger import debug_circuit, _protected_program_memory
+from dlc.l3.debugger import debug_circuit, _protected_roms
 from dlc.parser.dig_parser import parse_dig_file
 
 
@@ -116,12 +116,12 @@ def test_protected_indices_need_payload_and_flag(monkeypatch, tmp_path):
     circuit = parse_dig_file(path)
     monkeypatch.setenv("DLC_OFFICIAL_DEFAULTS_PATH",
                        str(tmp_path / "missing.json"))
-    assert _protected_program_memory(circuit, "proglab.dig") == set()
+    assert _protected_roms(circuit, "proglab.dig") == set()
     _register_payload(monkeypatch, tmp_path, "proglab.dig")
-    assert _protected_program_memory(circuit, "proglab.dig") == {_ROM_IDX}
-    assert _protected_program_memory(
+    assert _protected_roms(circuit, "proglab.dig") == {_ROM_IDX}
+    assert _protected_roms(
         circuit, ".dlc_injected__proglab.dig") == {_ROM_IDX}
-    assert _protected_program_memory(circuit, None) == set()
+    assert _protected_roms(circuit, None) == set()
 
 
 def test_program_data_op_is_stripped_and_run_says_why(monkeypatch,
@@ -133,7 +133,7 @@ def test_program_data_op_is_stripped_and_run_says_why(monkeypatch,
                         source_filename="proglab.dig")
     assert res["mode"] == "analysis"
     assert res["cards"] == []
-    assert any(d["reason"] == "program_memory_protected"
+    assert any(d["reason"] == "rom_protected"
                for d in res["dropped_ideas"])
     assert any("never edits it" in n for n in res["notes"])
     assert "\n[ROM NOTE]\n" in call.log[0]
@@ -162,7 +162,7 @@ def test_unflagged_rom_is_protected_when_a_payload_exists(monkeypatch,
         encoding="utf-8")
     circuit = parse_dig_file(str(p))
     assert not circuit.components[_ROM_IDX].attributes.get("isProgramMemory")
-    assert _protected_program_memory(circuit, "proglab.dig") == {_ROM_IDX}
+    assert _protected_roms(circuit, "proglab.dig") == {_ROM_IDX}
 
 
 def test_prompt_teaches_the_rom_rule():
@@ -173,8 +173,7 @@ def test_prompt_teaches_the_rom_rule():
     assert "[PROGRAM MEMORY]" not in text
 
 
-def test_empty_program_rom_warning_names_the_injection(monkeypatch,
-                                                       tmp_path):
+def test_empty_rom_warning_names_the_check(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
     from dlc.web.server import app
 
@@ -188,7 +187,7 @@ def test_empty_program_rom_warning_names_the_injection(monkeypatch,
     issues = r.json()["files"][0]["issues"]
     rom_warns = [i for i in issues if i["kind"] == "empty_rom"]
     assert rom_warns, "empty program ROM must still warn"
-    assert any("debugger only runs once the ROM holds it" in i["message"]
+    assert any("refuses to run until the ROM matches" in i["message"]
                for i in rom_warns)
     assert all(i["severity"] == "warning" for i in rom_warns)
 
@@ -197,7 +196,7 @@ def test_empty_program_rom_warning_names_the_injection(monkeypatch,
     issues2 = r2.json()["files"][0]["issues"]
     plain = [i for i in issues2 if i["kind"] == "empty_rom"]
     assert plain and all(
-        "debugger only runs" not in i["message"] for i in plain)
+        "refuses to run" not in i["message"] for i in plain)
 
 
 def test_add_component_smuggle_route_is_also_stripped(monkeypatch,

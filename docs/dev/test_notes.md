@@ -502,9 +502,11 @@ Mode C (per-spec fallback to Mode B happens automatically).
 | `test_gc_sessions_removes_idle_sessions_and_their_tmp_dirs` | Idle sessions / upload temp dirs accumulate forever (pre-cohort leak). | `tests/test_telemetry_sink.py` |
 | `test_activity_defers_the_session_ttl` | Active students can lose their session mid-lab to the GC. |`tests/test_telemetry_sink.py` |
 | `test_upload_runs_the_gc_sweep` | The GC no longer rides on uploads; nothing ever gets collected. |`tests/test_telemetry_sink.py` |
-| `test_rom_gate_verdicts` | The ROM gate misjudges an empty, wrong, matching or missing instruction memory, or leaks the official words into its message. | `tests/test_injection.py` |
-| `test_rom_gate_refuses_empty_or_wrong_program_for_free` | Mode A reached the model, or charged a daily use, on a file whose ROM does not hold the course program. | `tests/test_server_l3_debug.py` |
-| `test_rom_gate_lets_the_course_program_through` | A matching ROM no longer reaches the coordinator, or `rom_verified` is wrong. | `tests/test_server_l3_debug.py` |
+| `test_rom_gate_verdicts` | The ROM gate misjudges an empty, wrong, matching or missing ROM, or leaks the registered words into its message. | `tests/test_injection.py` |
+| `test_rom_gate_walks_the_subcircuit_tree` | A child file's registered ROM is no longer checked when its parent is debugged. | `tests/test_injection.py` |
+| `test_rom_gate_refuses_empty_or_wrong_rom_for_free` | Mode A reached the model, or charged a daily use, on a file whose ROM does not hold the registered contents. | `tests/test_server_l3_debug.py` |
+| `test_rom_gate_lets_matching_contents_through` | A matching ROM no longer reaches the coordinator, or `rom_verified` is wrong. | `tests/test_server_l3_debug.py` |
+| `test_with_rom_registers_the_file_rom` | `python -m dlc.fingerprint --with-rom` stops emitting the `runtime` blob, or `--merge` drops entries it should keep. | `tests/test_fingerprint_cli.py` |
 
 ## When you add a new test
 
