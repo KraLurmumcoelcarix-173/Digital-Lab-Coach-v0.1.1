@@ -567,6 +567,20 @@ def test_all_rows_error_with_unbound_columns_gets_rename_guidance(
     assert "Rename" in res["suggestions"][0]["hint"]
 
 
+def test_no_lazy_gate_list_comes_from_the_manifest(tmp_path, monkeypatch):
+    from dlc.l3.debugger import _lazy_exempt_name
+    mdir = tmp_path / "manifests"
+    mdir.mkdir()
+    monkeypatch.setenv("DLC_MANIFEST_DIR", str(mdir))
+    assert _lazy_exempt_name("control-unit.dig") is False
+    (mdir / "lab.json").write_text(json.dumps({
+        "lab": "t", "applies_to": ["alu.dig"], "no_lazy_gate": ["ALU.dig"],
+        "categories": {}, "official_tests": {}, "reference_dir": None}))
+    assert _lazy_exempt_name("alu.dig") is True
+    assert _lazy_exempt_name("/x/y/.dlc_injected__Alu.dig") is True
+    assert _lazy_exempt_name("control-unit.dig") is False
+
+
 def test_control_unit_files_skip_the_lazy_gate(tmp_path):
     from dlc.l3.debugger import _lazy_exempt_name
     assert _lazy_exempt_name("control-unit.dig") is True

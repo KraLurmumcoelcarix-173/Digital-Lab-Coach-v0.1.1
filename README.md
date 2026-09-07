@@ -227,6 +227,7 @@ Restart the server (or the proxy) after changing any of these.
 | LLM call timeout | env `DLC_LLM_TIMEOUT` (seconds, default 180) |
 | Lecture list Layer 2 cites | `SYLLABUS_311` in [`dlc/llm/explain.py`](dlc/llm/explain.py) ([Adapting the course syllabus](#adapting-the-course-syllabus-layer-2-lecture-tags)) |
 | Lab categories, subcircuit roles and formula models, program decode | one manifest per lab in [`data/manifests/`](data/manifests/) ([docs/MANIFEST_GUIDE.md](docs/MANIFEST_GUIDE.md))|
+| Which files Mode A analyzes even when most rows fail (no lazy gate) | the `no_lazy_gate` list in that lab's manifest; the shipped CPU manifests list the control unit |
 | Official tests | Settings ⚙ → Official tests (`~/.dlc/official_tests.json`), shipped defaults in `data/official_tests_defaults.json` |
 | The course program a lab's instruction ROM must hold | the `runtime` entry in `data/official_tests_defaults.json` ([docs/instructor_rom_config.md](docs/instructor_rom_config.md)) |
 | Solution circuits used to double-check mode B proposals if necessary| env `DLC_REFERENCE_DIR` on YOUR machine only; leave `reference_dir: null` in manifests |

@@ -11,6 +11,7 @@
     "boolean-unit.dig",
     "slt-unit.dig"
   ],
+  "no_lazy_gate": ["control-unit.dig"],
   "subcircuits": {
     "alu.dig": {
       "model": "lab5_alu",

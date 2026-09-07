@@ -15,6 +15,7 @@
     "boolean-unit.dig",
     "slt-unit.dig"
   ],
+  "no_lazy_gate": ["controlunit.dig"],
   "_note": "alu.dig and alu_rv32i.dig are the same RV32I ALU under either name; keep whichever your tree uses. official_tests stays empty until the lab's tests are registered (Settings → Official tests).",
   "subcircuits": {
     "controlunit.dig": {

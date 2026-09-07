@@ -99,10 +99,11 @@ Evidence stage (`assemble_evidence`):
 10. **One replay of the whole testcase** (`simulate_rows`, register state
    carried between rows). It yields every failing row's net values and,
    across all rows, the components whose output never changes (§3).
-11. **Gross checks** (`gross_check`). Skipped entirely for control-unit
-    files (`controlunit.dig` / `control-unit.dig` and their injected temps,
-    matched case- and punctuation-insensitively); the refusal guards above
-    still apply to them. Checked in order:
+11. **Gross checks** (`gross_check`). Skipped entirely for files listed
+    under `no_lazy_gate` in a lab manifest (matched case- and
+    punctuation-insensitively, injected temps included; the shipped CPU
+    manifests list `control-unit.dig` and `controlunit.dig`); the refusal
+    guards above still apply to them. Checked in order:
     - `scattered_failures` — only for trees with more than 30 components
       and no frozen trunk: rows wrong in 4 or more output columns at once
       reach 25% of the testcase's well-formed rows.

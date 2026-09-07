@@ -345,13 +345,14 @@ verified empirically:
 - **Mode A daily cap is 1** — a booked use requires a delivered
   verified card, and the stop condition bounds one run's spend, so a
   single daily analysis is a full analysis.
-- **Control-unit files skip the lazy gate**: any file whose real name normalizes
-  to control-unit (`control-unit.dig`, `controlunit.dig`, injected
-  temps included) bypasses gross_check entirely and goes straight to
-  analysis when rows fail (`_lazy_exempt_name` /
-  `assemble_evidence(lazy_exempt=True)`; the web layer keys on
-  `req.filename` so coach temps qualify too). Refusal guards
-  (build_refused / unbound_columns) and the failing-children gate
+- **`no_lazy_gate` files skip the lazy gate**: a file listed under
+  `no_lazy_gate` in a lab manifest (name normalized: case, punctuation
+  and the `.dig` suffix ignored, injected temps included) bypasses
+  gross_check entirely and goes straight to analysis when rows fail
+  (`_lazy_exempt_name` / `assemble_evidence(lazy_exempt=True)`; the web
+  layer keys on `req.filename` so coach temps qualify too). The shipped
+  CPU manifests list `control-unit.dig` and `controlunit.dig`. Refusal
+  guards (build_refused / unbound_columns) and the failing-children gate
   still apply. All other filenames keep every ratified lazy bar.
 
 - **Stored data is checked FIRST, not last**:

@@ -571,22 +571,27 @@ _ROM_STUDENT_NOTE = (
 )
 
 
-def _lazy_exempt_name(name: str | None) -> bool:
-    """Instructor ruling:
-    control-unit files always skip the lazy gate and go straight to
-    analysis. Matched on the normalized filename (case/punctuation
-    insensitive, tool-owned `.dlc_injected__` prefix stripped), so
-    `control-unit.dig`, `controlunit.dig` and their injected temps all
-    qualify. Refusal guards (build refused / unbound columns) and the
-    failing-children gate still apply — an unrunnable file has nothing
-    to analyze."""
-    if not name:
-        return False
+def _lazy_norm(name: str) -> str:
     base = Path(str(name)).name
     if base.startswith(".dlc_injected__"):
         base = base[len(".dlc_injected__"):]
-    norm = "".join(ch for ch in base.lower() if ch.isalnum())
-    return norm in ("controlunitdig", "controlunit")
+    if base.lower().endswith(".dig"):
+        base = base[:-4]
+    return "".join(ch for ch in base.lower() if ch.isalnum())
+
+
+def _lazy_exempt_name(name: str | None) -> bool:
+    if not name:
+        return False
+    from dlc.l3.manifest import load_manifests
+    norm = _lazy_norm(name)
+    if not norm:
+        return False
+    for m in load_manifests():
+        for f in m.get("no_lazy_gate") or []:
+            if _lazy_norm(str(f)) == norm:
+                return True
+    return False
 
 
 def debug_circuit(dig_path: str, *, spec_name: str | None = None,

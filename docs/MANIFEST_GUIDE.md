@@ -48,6 +48,7 @@ opcodes, digit classes or subcircuit roles needs no manifest at all.
 {
   "lab": "my-lab",
   "applies_to": ["my-top.dig", "my-sub.dig"],
+  "no_lazy_gate": ["my-control-unit.dig"],
   "subcircuits": { ... },
   "categories": { ... },
   "program_decode": { ... },
@@ -61,6 +62,13 @@ opcodes, digit classes or subcircuit roles needs no manifest at all.
   the most uploaded files wins, so two labs may share subcircuit files.
   A display lab can also attach by element kind with
   `"applies_to_elements": ["Seven-Seg"]`.
+- `no_lazy_gate` — files the Mode A debugger analyzes even when most
+  rows fail. Normally a circuit failing more than the pass-rate bar is
+  sent back to the basics without a model call (the "lazy gate"); a
+  control unit whose one wrong detector fails many rows at once must
+  not be. Names match case- and punctuation-insensitively, so
+  `control-unit.dig` also covers `controlunit.dig`. Leave the list out
+  when the lab has no such file.
 - `official_tests` — optional sha1 fingerprints (`dlc.fingerprint
   --hashes-only`); the Settings store normally makes this unnecessary,
   leave `{}`.

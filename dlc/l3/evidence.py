@@ -1177,7 +1177,8 @@ def assemble_evidence(circuit, netlist, graph, spec: TestSpec, *,
 
     if lazy_exempt:
         res.notes.append(
-            "lazy-gate checks skipped for this file (control-unit rule).")
+            "lazy-gate checks skipped for this file (listed under "
+            "no_lazy_gate in the lab manifest).")
     else:
         flags = gross_check(circuit, spec, len(failing),
                             max_failing=max_failing,
