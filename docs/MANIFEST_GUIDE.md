@@ -1,8 +1,7 @@
 # Configuring DLC for your own lab (instructor guide)
 
-> Step 1 of the instructor flow (see the README's *Instructor setup*).
-> Related: ROM payloads — `instructor_rom_config.md`; course proxy
-> deployment — `../proxy/README.md`.
+Related Doc: ROM payloads — `instructor_rom_config.md`; course proxy
+deployment — `../proxy/README.md`.
 
 DLC works on any Digital (`.dig`) circuit out of the box: structural
 coverage (mux arms, boundaries, constant outputs and every structural
