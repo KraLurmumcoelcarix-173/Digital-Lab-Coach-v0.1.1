@@ -327,49 +327,53 @@ class DebugRequest(BaseModel):
     model: str | None = None
 
 
-_ROM_HINT = (
-    "Check your ROM data: this analysis ran with the course program "
-    "loaded into your empty ROM, so the fix above covers the logic only "
-    "— your own file's ROM is still unprogrammed. Fill it in before "
-    "submitting."
-)
+def _rom_gate_result(gate: dict, model: str | None, on_temp: bool) -> dict:
+    from dlc.l3 import debugger
+    return {
+        "ok": True, "contract": debugger.CONTRACT,
+        "model": model or debugger._debug_model(),
+        "mode": "rom_mismatch", "message": gate["message"],
+        "rom_check": gate, "cards": [], "notes": [], "dropped_ideas": [],
+        "usage": {"input_tokens": 0, "output_tokens": 0}, "llm_calls": 0,
+        "rom_verified": False, "limits": limits.state(),
+        "consumed_use": False, "on_coach_temp": on_temp,
+    }
 
 
-def _rom_injected_notes(notes: list[str] | None) -> bool:
-    return any("course program was loaded" in n for n in (notes or []))
-
-
-def _apply_rom_hint(result: dict, rom_injected: bool) -> None:
-    result["rom_injected"] = rom_injected
-    if not rom_injected:
-        return
-    for card in result.get("cards") or []:
-        fix = card.get("fix") or {}
-        fix["rom_hint"] = _ROM_HINT
-        expl = (fix.get("explanation_for_student") or "").rstrip()
-        if expl and not expl.endswith("."):
-            expl += "."
-        fix["explanation_for_student"] = (expl + " " + _ROM_HINT).strip()
-        card["fix"] = fix
+def _log_modeA_result(session_id: str, filename: str, result: dict) -> None:
+    try:
+        from dlc.telemetry.sink import log_events
+        u = result.get("usage") or {}
+        log_events(session_id, [{
+            "kind": "l3_modeA_result_server",
+            "filename": filename, "mode": result.get("mode"),
+            "cards": len(result.get("cards") or []),
+            "confirmed": sum(1 for c in (result.get("cards") or [])
+                             if (c.get("verified") or {}).get("confirmed")),
+            "llm_calls": result.get("llm_calls"),
+            "in_tokens": u.get("input_tokens"),
+            "out_tokens": u.get("output_tokens"),
+            "model": result.get("model"),
+            "rom_verified": bool(result.get("rom_verified")),
+            "consumed_use": bool(result.get("consumed_use")),
+        }])
+    except Exception:
+        pass
 
 
 @router.post("/api/llm/debug")
 def llm_debug(req: DebugRequest) -> dict:
     from dlc.l3 import debugger
+    from dlc.l3.official_store import get_runtime_payload
+    from dlc.testing.inject import (
+        check_program_rom, prepare_injected_run, cleanup_injected,
+    )
     from dlc.web import server
 
     target = server._resolve_target(req.session_id, req.filename)
     guard = _transistor_guard(target["path"])
     if guard is not None:
         return {**guard, "mode": "unsupported", "cards": []}
-    if not limits.allowed("modeA"):
-        return {
-            "ok": False,
-            "limited": True,
-            "warning": "Daily debug-analysis limit reached — try again "
-                       "tomorrow.",
-            "limits": limits.state(),
-        }
 
     path, spec_name, on_temp = target["path"], None, False
     coach_rows = None
@@ -380,23 +384,33 @@ def llm_debug(req: DebugRequest) -> dict:
         path, spec_name, on_temp = lt["path"], lt.get("spec_name"), True
         coach_rows = lt.get("coach_rows") or None
 
+    gate = check_program_rom(path, req.filename)
+    if gate is not None:
+        result = _rom_gate_result(gate, req.model, on_temp)
+        _log_modeA_result(req.session_id, req.filename, result)
+        return result
+
+    if not limits.allowed("modeA"):
+        return {
+            "ok": False,
+            "limited": True,
+            "warning": "Daily debug-analysis limit reached — try again "
+                       "tomorrow.",
+            "limits": limits.state(),
+        }
+
     inj_temp, inj_notes = (None, [])
     if not on_temp:
-        from dlc.testing.inject import (
-            prepare_injected_run, cleanup_injected,
-        )
         inj_temp, inj_notes = prepare_injected_run(path, req.filename)
         if inj_temp:
             path = inj_temp
             spec_name = None
 
-    rom_injected = _rom_injected_notes(inj_notes)
     try:
         result = debugger.debug_circuit(
             path, spec_name=spec_name, spec_index=req.spec_index,
             model=req.model, coach_rows=coach_rows,
             lazy_exempt=debugger._lazy_exempt_name(req.filename),
-            rom_injected=rom_injected,
             source_filename=req.filename,
         )
     except Exception as exc:
@@ -407,31 +421,14 @@ def llm_debug(req: DebugRequest) -> dict:
             cleanup_injected(inj_temp)
     if inj_notes:
         result["injected"] = inj_notes
-    _apply_rom_hint(result, rom_injected)
+    result["rom_verified"] = bool(get_runtime_payload(req.filename, "rom"))
 
     consumed = (result.get("mode") == "analysis"
                 and bool(result.get("cards")))
     result["limits"] = limits.consume("modeA") if consumed else limits.state()
     result["consumed_use"] = consumed
     result["on_coach_temp"] = on_temp
-    try:
-        from dlc.telemetry.sink import log_events
-        u = result.get("usage") or {}
-        log_events(req.session_id, [{
-            "kind": "l3_modeA_result_server",
-            "filename": req.filename, "mode": result.get("mode"),
-            "cards": len(result.get("cards") or []),
-            "confirmed": sum(1 for c in (result.get("cards") or [])
-                             if (c.get("verified") or {}).get("confirmed")),
-            "llm_calls": result.get("llm_calls"),
-            "in_tokens": u.get("input_tokens"),
-            "out_tokens": u.get("output_tokens"),
-            "model": result.get("model"),
-            "rom_injected": bool(result.get("rom_injected")),
-            "consumed_use": consumed,
-        }])
-    except Exception:
-        pass
+    _log_modeA_result(req.session_id, req.filename, result)
     return result
 
 

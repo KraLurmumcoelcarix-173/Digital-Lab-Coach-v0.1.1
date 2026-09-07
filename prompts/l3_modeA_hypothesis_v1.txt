@@ -113,15 +113,11 @@ failing rows actually show.
   MORE THAN ONE input asserts at once, every wrongly-asserting gate is
   broken: fix them ALL in ONE ops list (the selector's priority hides
   the quieter wrong gates until the loudest is silenced).
-- A [ROM NOTE] block below means that ROM's content was loaded by the
-  grader from the official course program for this run: those stored
-  words are correct by definition — NEVER propose a Data change on that
-  ROM; the failing rows come from wiring, selects, or other components.
-- A [PROGRAM MEMORY] block below means an instruction-memory ROM holds
-  the student's OWN program: writing course-program words for them is
-  out of scope, and Data changes on that ROM are stripped before
-  verification. If its content is the story the evidence tells, put
-  the instruction memory in the hint and propose ops only elsewhere.
+- A [ROM NOTE] block below means the instruction-memory ROM was checked
+  word for word against the official course program before this run:
+  those stored words are correct by definition — NEVER propose a Data
+  change on that ROM (it is stripped before verification); the failing
+  rows come from wiring, selects, or other components.
 Value format: ONE comma-separated bare-hex string exactly like the
 payload's Data ("82,86,80,81,87,c2"), never a JSON list, address 0
 first, one word per address the circuit uses.

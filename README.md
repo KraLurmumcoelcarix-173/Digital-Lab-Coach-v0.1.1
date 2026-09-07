@@ -115,8 +115,9 @@ The detailed version: [docs/RELEASE_GUIDE.md](docs/RELEASE_GUIDE.md):
 1. Fork this repository; configure the official test set (and manifest,
    if your labs go beyond the built-ins): step-by-step:
    [docs/MANIFEST_GUIDE.md](docs/MANIFEST_GUIDE.md).
-2. Labs whose instruction ROM should carry a course program at grading
-   time: [docs/instructor_rom_config.md](docs/instructor_rom_config.md).
+2. Labs whose instruction ROM must hold a fixed course program (loaded
+   into an empty ROM for test runs, checked word for word before Mode A):
+   [docs/instructor_rom_config.md](docs/instructor_rom_config.md).
 3. Generate the two course secrets, deploy the course proxy (holds YOUR
    API key), and hand students your release URL + the proxy URL + course
    token.
@@ -227,7 +228,7 @@ Restart the server (or the proxy) after changing any of these.
 | Lecture list Layer 2 cites | `SYLLABUS_311` in [`dlc/llm/explain.py`](dlc/llm/explain.py) ([Adapting the course syllabus](#adapting-the-course-syllabus-layer-2-lecture-tags)) |
 | Lab categories, subcircuit roles and formula models, program decode | one manifest per lab in [`data/manifests/`](data/manifests/) ([docs/MANIFEST_GUIDE.md](docs/MANIFEST_GUIDE.md))|
 | Official tests | Settings ⚙ → Official tests (`~/.dlc/official_tests.json`), shipped defaults in `data/official_tests_defaults.json` |
-| The program a graded lab loads into an empty ROM | the `runtime` entry in `data/official_tests_defaults.json` ([docs/instructor_rom_config.md](docs/instructor_rom_config.md)) |
+| The course program a lab's instruction ROM must hold | the `runtime` entry in `data/official_tests_defaults.json` ([docs/instructor_rom_config.md](docs/instructor_rom_config.md)) |
 | Solution circuits used to double-check mode B proposals if necessary| env `DLC_REFERENCE_DIR` on YOUR machine only; leave `reference_dir: null` in manifests |
 | The formula models themselves | [`dlc/sim/models.py`](dlc/sim/models.py) - one function per known subcircuit, each validated against the child's own testcase before use |
 | Digital.jar location | first-run dialog, Settings, or env `DIGITAL_JAR` |

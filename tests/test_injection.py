@@ -191,6 +191,93 @@ def test_empty_rom_is_warning_and_never_blocks(tmp_path):
     assert _l1_error_block(c) is None
 
 
+def test_data_words_parses_digital_formats():
+    from dlc.testing.inject import _data_words
+    assert _data_words("5,6") == [5, 6]
+    assert _data_words("5 6 0 0") == [5, 6]
+    assert _data_words("2*1f,3") == [31, 31, 3]
+    assert _data_words("10,11", "dec") == [10, 11]
+    assert _data_words("FEC00213") == [0xFEC00213]
+    assert _data_words("") == []
+    assert _data_words("0,0,0") == []
+
+
+def _cpu_with_rom(data):
+    if data is None:
+        return _EMPTY_CPU
+    return _EMPTY_CPU.replace(
+        "<entry><string>Label</string><string>Instruction Memory</string></entry>",
+        "<entry><string>Label</string><string>Instruction Memory</string></entry>"
+        f"<entry><string>Data</string><data>{data}</data></entry>",
+    )
+
+
+def test_rom_gate_verdicts(tmp_path):
+    import re
+    from dlc.testing.inject import check_program_rom
+
+    official = official_store.get_runtime_payload("cpu.dig", "rom")
+    n_official = len(official.split(","))
+    p = tmp_path / "cpu.dig"
+
+    p.write_text(_cpu_with_rom(None), encoding="utf-8")
+    v = check_program_rom(str(p), "cpu.dig")
+    assert v["status"] == "empty" and v["rom"] == "Instruction Memory"
+    assert v["words_expected"] == n_official and v["words_found"] == 0
+    assert "no program to run" in v["message"]
+
+    p.write_text(_cpu_with_rom("1,2,3"), encoding="utf-8")
+    v = check_program_rom(str(p), "cpu.dig")
+    assert v["status"] == "mismatch" and v["first_bad_address"] == 0
+    assert v["words_found"] == 3 and v["differing"] == n_official
+    assert "your word there is 1" in v["message"]
+    assert official.split(",")[0] not in v["message"]
+
+    p.write_text(_cpu_with_rom(official), encoding="utf-8")
+    assert check_program_rom(str(p), "cpu.dig") is None
+    assert check_program_rom(str(p), ".dlc_injected__cpu.dig") is None
+    assert check_program_rom(str(p), "mystery.dig") is None
+
+    p.write_text(_cpu_with_rom(official.upper() + ",0,0"), encoding="utf-8")
+    assert check_program_rom(str(p), "cpu.dig") is None
+
+    q = tmp_path / "norom.dig"
+    q.write_text(re.sub(r"<visualElement>\s*<elementName>ROM</elementName>"
+                        r".*?</visualElement>\s*", "", _EMPTY_CPU,
+                        flags=re.S), encoding="utf-8")
+    v = check_program_rom(str(q), "cpu.dig")
+    assert v["status"] == "missing" and "no ROM" in v["message"]
+    assert check_program_rom(str(tmp_path / "absent.dig"), "cpu.dig") is None
+
+
+def test_rom_gate_checks_only_the_program_memory_when_flagged(tmp_path):
+    from dlc.testing.inject import check_program_rom
+
+    official = official_store.get_runtime_payload("cpu.dig", "rom")
+    flagged = _cpu_with_rom(official).replace(
+        "<entry><string>Label</string><string>Instruction Memory</string></entry>",
+        "<entry><string>Label</string><string>Instruction Memory</string></entry>"
+        "<entry><string>isProgramMemory</string><boolean>true</boolean></entry>",
+    ).replace(
+        "    <visualElement>\n      <elementName>Testcase</elementName>",
+        "    <visualElement>\n      <elementName>ROM</elementName>\n"
+        "      <elementAttributes>\n"
+        "        <entry><string>Label</string><string>lookup</string></entry>\n"
+        "      </elementAttributes>\n      <pos x=\"400\" y=\"0\"/>\n"
+        "    </visualElement>\n"
+        "    <visualElement>\n      <elementName>Testcase</elementName>",
+    )
+    p = tmp_path / "cpu.dig"
+    p.write_text(flagged, encoding="utf-8")
+    assert check_program_rom(str(p), "cpu.dig") is None
+
+    p.write_text(flagged.replace(
+        "<entry><string>isProgramMemory</string><boolean>true</boolean></entry>",
+        ""), encoding="utf-8")
+    v = check_program_rom(str(p), "cpu.dig")
+    assert v["status"] == "empty" and v["rom"] == "lookup"
+
+
 def test_injected_testcase_is_labeled(tmp_path):
     from dlc.testing.inject import INJECTED_TEST_LABEL
     from dlc.parser.dig_parser import parse_dig_file

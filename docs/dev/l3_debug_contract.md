@@ -43,9 +43,11 @@ Accept fix, §7), the run targets that temp instead: original circuit plus
 the accepted rows, plus any earlier accepted fix. When the file's testcase
 is missing, header-only or modified and an official test set exists for
 the filename, the run targets a sibling injected temp carrying the
-official rows (`dlc/testing/inject.prepare_injected_run`); ROM contents
-are never injected except the course program into an EMPTY program ROM
-(`rom_injected`). The circuit cannot be switched inside Layer 3.
+official rows (`dlc/testing/inject.prepare_injected_run`). ROM contents
+are never injected in Mode A: when the official store holds a course
+program for the filename, the file's instruction memory must already
+contain it (the ROM gate, §2). The circuit cannot be switched inside
+Layer 3.
 
 ## 2. Coordinator pipeline (deterministic, server-side)
 
@@ -57,20 +59,28 @@ Gates before any evidence, in order:
    temp has failing accepted rows).
 2. **Transistor guard.** A tree containing switch-level elements returns
    `{"ok": false, "unsupported": true, "mode": "unsupported", "cards": []}`.
-3. **Daily cap.** `limits.allowed("modeA")` — only enforced when
+3. **ROM gate.** When the official store holds a course program for the
+   filename (`get_runtime_payload(filename, "rom")`),
+   `dlc/testing/inject.check_program_rom` compares the file's instruction
+   memory with it word for word (the ROMs marked Program Memory, else
+   every ROM; formatting, case, `n*word` shorthand and trailing zero words
+   do not matter). Empty, different or missing ROM → `mode:
+   "rom_mismatch"` with the fixed `message` and `rom_check`, no model
+   call, no daily use consumed (§6). The words never leave the server.
+4. **Daily cap.** `limits.allowed("modeA")` — only enforced when
    `DLC_ENFORCE_LIMITS` is on (§10); otherwise `{"ok": false,
    "limited": true, "warning": ..., "limits": ...}`.
-4. **Parse + testcase pick.** Unparsable file, no testcase or a bad
+5. **Parse + testcase pick.** Unparsable file, no testcase or a bad
    `spec_index` → `mode: "error"` with a `warning`.
-5. **Manifest attachment.** The manifest whose `applies_to` covers the most
+6. **Manifest attachment.** The manifest whose `applies_to` covers the most
    uploaded filenames (top file plus referenced children) wins; ties keep
    file order; an element-hook manifest is the fallback.
-6. **Failing children.** Every subcircuit runs its own testcase (its
+7. **Failing children.** Every subcircuit runs its own testcase (its
    official set when one is registered for its filename) through the
    evaluator. Any failing row → `mode: "lazy"` with a
    `subcircuit_failing` / `subcircuit_failing_official` flag: fix the
    child first.
-7. **Per-row verdicts.** With a Digital.jar configured, `per_row_run_auto`
+8. **Per-row verdicts.** With a Digital.jar configured, `per_row_run_auto`
    (the fast runner, then the per-row runner) gives the failing rows and
    their mismatched cells; `row_verdict_runner: "digital"`. Every row
    erroring means Digital refused the build → `mode: "lazy"` with
@@ -80,16 +90,16 @@ Gates before any evidence, in order:
 
 Evidence stage (`assemble_evidence`):
 
-8. **Formula models.** Each passing subcircuit is replaced by the function
+9. **Formula models.** Each passing subcircuit is replaced by the function
    it computes when a model fits its interface and reproduces every row of
    the child's own testcase, or when the manifest's `subcircuits` block
    vouches for it by name. The notes list the substitutions
    (`subcircuits evaluated as formula models: alu.dig → rv32i_alu, …`) and
    why a child stayed gate-level. Layer 1 never uses models.
-9. **One replay of the whole testcase** (`simulate_rows`, register state
+10. **One replay of the whole testcase** (`simulate_rows`, register state
    carried between rows). It yields every failing row's net values and,
    across all rows, the components whose output never changes (§3).
-10. **Gross checks** (`gross_check`). Skipped entirely for control-unit
+11. **Gross checks** (`gross_check`). Skipped entirely for control-unit
     files (`controlunit.dig` / `control-unit.dig` and their injected temps,
     matched case- and punctuation-insensitively); the refusal guards above
     still apply to them. Checked in order:
@@ -104,7 +114,7 @@ Evidence stage (`assemble_evidence`):
       60% passing; 1–5 rows → under 30%.
     Any flag → `mode: "lazy"`, no model call, no daily use consumed. A
     tree of 30 components or fewer is always analyzable.
-11. **Clustering** (`cluster_rows`). Bucket key = (mismatched output
+12. **Clustering** (`cluster_rows`). Bucket key = (mismatched output
     columns, values of the select columns — inputs that drive a mux
     `sel` or are named like op/opcode/sel/mode/ctrl/aluop/funct —, the
     manifest-decoded instruction category of the word on the program
@@ -115,13 +125,13 @@ Evidence stage (`assemble_evidence`):
     failing row shows the same wrong value per column while the passing
     rows expect one constant — makes a single cluster so a fix must repair
     every row.
-11b. **PC divergence** (labs whose manifest names `observe.pc_port`): once
+12b. **PC divergence** (labs whose manifest names `observe.pc_port`): once
     the program counter is wrong on a row and stays wrong on at least 90%
     of the failing rows after it (3 or more), those later rows are
     consequences of the divergence. They stay out of the evidence and
     the clusters (`consequential_rows`, a note and a diagnosis line say
     so) but every fix is still verified against them.
-12. **Per-cluster evidence**: full net values for the first 2 rows of the
+13. **Per-cluster evidence**: full net values for the first 2 rows of the
     cluster, compact expected-vs-found for the rest, `localize()` per row,
     `merge_reports()` per cluster, one payload per cluster.
 
@@ -222,11 +232,11 @@ Evidence stage (`assemble_evidence`):
   `suspect_wiring`; the run notes say so.
 
 The prompt is `prompts/l3_modeA_hypothesis_v1.txt` with `<<PAYLOAD_JSON>>`
-replaced. Appended blocks: `[ROM NOTE]` when the course program was
-injected into an empty ROM; `[PROGRAM MEMORY]` when the file's
-program-memory ROM holds the student's own program and the official store
-has a runtime program for that filename (Data changes on it are stripped
-before verification); `# FORMAT RETRY` after a reply that is not the
+replaced. Appended blocks: `[ROM NOTE]` when the official store holds a
+course program for the filename (the ROM gate has verified that the
+file's instruction memory holds it word for word; Data changes on that
+ROM are stripped before verification and its words stay out of the
+payload); `# FORMAT RETRY` after a reply that is not the
 strict JSON object (once); `[REFUTED ATTEMPT]` after a refuted fix (once
 per cluster) with the re-run's still-failing and regressed rows, a
 partial-fix steer when the refuted ops repaired some cluster rows, and a
@@ -317,9 +327,10 @@ For each reply, in order:
 
 1. **Normalize.** A `Data` rewrite aimed at a component that is not the
    circuit's single storage element is redirected to that element (noted
-   in the run). Data changes on a protected program-memory ROM are
-   stripped; a reply left with no ops is dropped as
-   `program_memory_protected`.
+   in the run). Data changes on the course-program ROM (the ROMs marked
+   Program Memory, else every ROM, of a file whose filename has a
+   registered course program) are stripped; a reply left with no ops is
+   dropped as `program_memory_protected`.
 2. **Apply** (`apply_patch`): unknown op → fail; the patched temp is
    written next to the source (so children resolve); it must re-parse and
    must not add Layer-1 errors compared with the original (the L1
@@ -384,18 +395,22 @@ For each reply, in order:
   "timings": {"llm_s": [31.2], "verify_s": [1.4], "total_s": 33.1},
   "verify_runner": "digital",
   "usage": {"input_tokens": 0, "output_tokens": 0}, "llm_calls": 1,
-  "injected": ["..."], "rom_injected": false,
-  "limits": {"date": "...", "caps": {"modeA": 1, "modeB": 2}, "used": {}, "remaining": {}},
+  "injected": ["..."], "rom_verified": false,
+  "limits": {"date": "...", "caps": {"modeA": 100, "modeB": 2}, "used": {}, "remaining": {}},
   "consumed_use": true, "on_coach_temp": false
 }
 ```
 
 Other modes: `"clear"` (every row passes; `message`), `"lazy"`
 (`gross_flags` plus `suggestions[]` — question, hint and Layer-2 library
-`terms` per flag; no cards, no ops), `"error"` (`ok: false`, `warning`),
+`terms` per flag; no cards, no ops), `"rom_mismatch"` (the ROM gate:
+`message` is the fixed verdict and `rom_check` carries `status`
+(`empty`, `mismatch` or `missing`), `rom`, `component_index`,
+`words_expected`, `words_found`, `differing` and `first_bad_address`; no
+model call, `llm_calls: 0`), `"error"` (`ok: false`, `warning`),
 `"unsupported"` (transistor labs). The route adds `injected` (official-row
-injection notes), `rom_injected` (also appends the ROM hint to every
-card's explanation as `fix.rom_hint`), `limits`, `consumed_use` and
+injection notes), `rom_verified` (true when the filename has a registered
+course program and the gate passed), `limits`, `consumed_use` and
 `on_coach_temp`. A run consumes a daily use only when it is an analysis
 that delivers at least one card.
 
@@ -445,12 +460,12 @@ mode, cards, llm_calls}` or `{filename, ok: false}` ·
 non-empty store).
 
 Server: `l3_modeA_result_server{filename, mode, cards, confirmed,
-llm_calls, in_tokens, out_tokens, model, rom_injected, consumed_use}` ·
+llm_calls, in_tokens, out_tokens, model, rom_verified, consumed_use}` ·
 `l3_accept_fix_server{filename, n_ops, all_passed, injected}`.
 
 ## 10. Limits and model selection
 
-`CAPS = {"modeA": 1, "modeB": 2}` runs per day per machine in
+`CAPS = {"modeA": 100, "modeB": 2}` runs per day per machine in
 `dlc/l3/limits.py`, stored in `~/.dlc/limits.json` (or `DLC_LIMITS_PATH`),
 enforced only when `DLC_ENFORCE_LIMITS` is set (the release launchers set
 it; a developer checkout runs uncapped). A Mode A use is consumed only by

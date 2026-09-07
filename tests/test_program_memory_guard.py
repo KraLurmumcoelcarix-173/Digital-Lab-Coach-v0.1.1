@@ -135,8 +135,9 @@ def test_program_data_op_is_stripped_and_run_says_why(monkeypatch,
     assert res["cards"] == []
     assert any(d["reason"] == "program_memory_protected"
                for d in res["dropped_ideas"])
-    assert any("clear that ROM's Data" in n for n in res["notes"])
-    assert "any Data change you propose" in call.log[0]
+    assert any("never edits it" in n for n in res["notes"])
+    assert "\n[ROM NOTE]\n" in call.log[0]
+    assert "such a change is stripped before verification" in call.log[0]
 
 
 def test_without_payload_the_same_op_flows_normally(monkeypatch,
@@ -149,14 +150,27 @@ def test_without_payload_the_same_op_flows_normally(monkeypatch,
                         source_filename="proglab.dig")
     assert res["cards"] and res["cards"][0]["verified"]["confirmed"]
     assert res["cards"][0]["fix"]["ops"][0]["name"] == "Data"
-    assert "any Data change you propose" not in call.log[0]
+    assert "\n[ROM NOTE]\n" not in call.log[0]
 
 
-def test_prompt_teaches_the_program_memory_rule():
+def test_unflagged_rom_is_protected_when_a_payload_exists(monkeypatch,
+                                                          tmp_path):
+    _register_payload(monkeypatch, tmp_path, "proglab.dig")
+    p = tmp_path / "proglab.dig"
+    p.write_text(_PROG_LAB.replace(
+        _entry("isProgramMemory", "true", tag="boolean"), ""),
+        encoding="utf-8")
+    circuit = parse_dig_file(str(p))
+    assert not circuit.components[_ROM_IDX].attributes.get("isProgramMemory")
+    assert _protected_program_memory(circuit, "proglab.dig") == {_ROM_IDX}
+
+
+def test_prompt_teaches_the_rom_rule():
     from dlc.l3.debugger import _load_prompt
     text = _load_prompt()
-    assert "[PROGRAM MEMORY]" in text
-    assert "student's OWN program" in text
+    assert "[ROM NOTE]" in text
+    assert "stripped before verification" in text
+    assert "[PROGRAM MEMORY]" not in text
 
 
 def test_empty_program_rom_warning_names_the_injection(monkeypatch,
@@ -174,7 +188,8 @@ def test_empty_program_rom_warning_names_the_injection(monkeypatch,
     issues = r.json()["files"][0]["issues"]
     rom_warns = [i for i in issues if i["kind"] == "empty_rom"]
     assert rom_warns, "empty program ROM must still warn"
-    assert any("YOUR OWN instruction" in i["message"] for i in rom_warns)
+    assert any("debugger only runs once the ROM holds it" in i["message"]
+               for i in rom_warns)
     assert all(i["severity"] == "warning" for i in rom_warns)
 
     r2 = client.post("/api/circuit", files=[
@@ -182,7 +197,7 @@ def test_empty_program_rom_warning_names_the_injection(monkeypatch,
     issues2 = r2.json()["files"][0]["issues"]
     plain = [i for i in issues2 if i["kind"] == "empty_rom"]
     assert plain and all(
-        "YOUR OWN instruction" not in i["message"] for i in plain)
+        "debugger only runs" not in i["message"] for i in plain)
 
 
 def test_add_component_smuggle_route_is_also_stripped(monkeypatch,
@@ -211,4 +226,4 @@ def test_add_component_smuggle_route_is_also_stripped(monkeypatch,
                 if c["verified"]["confirmed"]]
     blob = json.dumps(res)
     assert '"5,6"' not in blob
-    assert any("clear that ROM's Data" in n for n in res["notes"])
+    assert any("never edits it" in n for n in res["notes"])

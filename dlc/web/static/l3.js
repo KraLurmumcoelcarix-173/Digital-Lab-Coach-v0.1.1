@@ -427,6 +427,11 @@ function l3ModeAStatus(res) {
     return { status: "Analysis says: fundamentals first — see the " +
              "suggestions below. This run was free.", cls: "blocked" };
   }
+  if (res.mode === "rom_mismatch") {
+    return { status: "Instruction memory check failed — fix the ROM " +
+             "first, re-upload, then analyze. This run was free.",
+             cls: "blocked" };
+  }
   if (res.mode === "analysis") {
     const n = (res.cards || []).length;
     if (!n) {
@@ -569,6 +574,17 @@ function l3ModeABodyHtml(ma) {
         `</div></div>`;
     }
     return html;
+  }
+  if (res.mode === "rom_mismatch") {
+    const rc = res.rom_check || {};
+    const title = { empty: "ROM check: instruction memory is empty",
+                    missing: "ROM check: no instruction memory",
+                    mismatch: "ROM check: not the course program" }[rc.status]
+      || "ROM check failed";
+    return html + `<div class="l3-flag">` +
+      `<div class="l3-flag-title">${escapeHtml(title)}</div>` +
+      `<div class="l3-flag-body">${escapeHtml(res.message || "")}</div>` +
+      `</div>`;
   }
   for (const line of res.diagnosis_lines || []) {
     html += `<div class="l3-diag">${_l3Netify(escapeHtml(line))}</div>`;

@@ -502,6 +502,9 @@ Mode C (per-spec fallback to Mode B happens automatically).
 | `test_gc_sessions_removes_idle_sessions_and_their_tmp_dirs` | Idle sessions / upload temp dirs accumulate forever (pre-cohort leak). | `tests/test_telemetry_sink.py` |
 | `test_activity_defers_the_session_ttl` | Active students can lose their session mid-lab to the GC. |`tests/test_telemetry_sink.py` |
 | `test_upload_runs_the_gc_sweep` | The GC no longer rides on uploads; nothing ever gets collected. |`tests/test_telemetry_sink.py` |
+| `test_rom_gate_verdicts` | The ROM gate misjudges an empty, wrong, matching or missing instruction memory, or leaks the official words into its message. | `tests/test_injection.py` |
+| `test_rom_gate_refuses_empty_or_wrong_program_for_free` | Mode A reached the model, or charged a daily use, on a file whose ROM does not hold the course program. | `tests/test_server_l3_debug.py` |
+| `test_rom_gate_lets_the_course_program_through` | A matching ROM no longer reaches the coordinator, or `rom_verified` is wrong. | `tests/test_server_l3_debug.py` |
 
 ## When you add a new test
 

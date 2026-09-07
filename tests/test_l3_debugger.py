@@ -622,19 +622,6 @@ def test_control_unit_files_skip_the_lazy_gate(tmp_path):
     assert any("lazy-gate checks skipped" in n for n in res2["notes"])
 
 
-def test_rom_injected_note_rides_every_cluster_prompt():
-    marker = "still has that ROM unprogrammed"
-    call = _fake([_reply(GOOD_OPS)])
-    debug_circuit(_BUG3, call=call, use_manifest=False,
-                  failing_indices=[0, 1], rom_injected=True)
-    assert marker in call.log[0]
-
-    call2 = _fake([_reply(GOOD_OPS)])
-    debug_circuit(_BUG3, call=call2, use_manifest=False,
-                  failing_indices=[0, 1])
-    assert marker not in call2.log[0]
-
-
 def test_prompt_checks_stored_data_first_not_last():
     from dlc.l3.debugger import _load_prompt
     text = _load_prompt()

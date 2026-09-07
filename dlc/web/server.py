@@ -332,9 +332,9 @@ async def circuit(files: list[UploadFile] = File(...)) -> dict:
                             " NOTE: for test runs and grading, the "
                             "official course program is loaded into "
                             "this ROM automatically — that is why "
-                            "tests can pass. Your submitted file must "
-                            "still contain YOUR OWN instruction "
-                            "memory; write it before submitting.")
+                            "tests can pass. Enter the course program "
+                            "yourself before submitting; the Layer 3 "
+                            "debugger only runs once the ROM holds it.")
             except Exception:
                 pass
             results.append({

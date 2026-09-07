@@ -79,6 +79,8 @@ def test_clear_and_lazy_are_free(monkeypatch):
 
 
 def test_enforced_cap_blocks_the_fourth_run(monkeypatch):
+    from dlc.l3 import limits
+    monkeypatch.setitem(limits.CAPS, "modeA", 3)
     sid = _upload_bug3()
     monkeypatch.setattr(debugger, "debug_circuit",
                         _canned("analysis", [{"rank": 1}]))
@@ -198,6 +200,16 @@ def test_empty_testcase_debug_runs_on_injected_temp(monkeypatch, tmp_path):
       <pos x="0" y="0"/>
     </visualElement>
     <visualElement>
+      <elementName>ROM</elementName>
+      <elementAttributes>
+        <entry><string>AddrBits</string><int>10</int></entry>
+        <entry><string>Bits</string><int>32</int></entry>
+        <entry><string>isProgramMemory</string><boolean>true</boolean></entry>
+        <entry><string>Data</string><data>%s</data></entry>
+      </elementAttributes>
+      <pos x="200" y="0"/>
+    </visualElement>
+    <visualElement>
       <elementName>Testcase</elementName>
       <elementAttributes>
         <entry><string>Label</string><string>cpu</string></entry>
@@ -210,6 +222,8 @@ def test_empty_testcase_debug_runs_on_injected_temp(monkeypatch, tmp_path):
   <wires/>
 </circuit>
 """
+    from dlc.l3 import official_store
+    empty_cpu = empty_cpu % official_store.get_runtime_payload("cpu.dig", "rom")
     r = client.post("/api/circuit", files=[
         ("files", ("cpu.dig", io.BytesIO(empty_cpu.encode()),
                    "application/xml"))])
@@ -230,57 +244,59 @@ def test_empty_testcase_debug_runs_on_injected_temp(monkeypatch, tmp_path):
     assert not os.path.exists(called_path)
 
 
-def test_rom_hint_rides_verified_cards_on_rom_injected_runs():
-    from dlc.web.l3_routes import _apply_rom_hint, _rom_injected_notes
-
-    assert _rom_injected_notes(
-        ["the course program was loaded into 1 empty ROM for this run "
-         "so your logic could be tested"]) is True
-    assert _rom_injected_notes(
-        ["official testcase injected (this file has no test rows)"]) is False
-    assert _rom_injected_notes(None) is False
-
-    result = {"mode": "analysis", "cards": [
-        {"fix": {"ops": [], "explanation_for_student": "rewire the mux"}}]}
-    _apply_rom_hint(result, True)
-    assert result["rom_injected"] is True
-    card_fix = result["cards"][0]["fix"]
-    assert "Check your ROM data" in card_fix["rom_hint"]
-    assert card_fix["explanation_for_student"].startswith("rewire the mux.")
-    assert "Check your ROM data" in card_fix["explanation_for_student"]
-
-    untouched = {"mode": "analysis", "cards": [
-        {"fix": {"ops": [], "explanation_for_student": "rewire the mux"}}]}
-    _apply_rom_hint(untouched, False)
-    assert untouched["rom_injected"] is False
-    assert "rom_hint" not in untouched["cards"][0]["fix"]
+def _upload_romlab(rom_data):
+    xml = _ROM_LAB
+    if rom_data is not None:
+        xml = xml.replace(
+            '<entry><string>Bits</string><int>4</int></entry>',
+            '<entry><string>Bits</string><int>4</int></entry>'
+            f'<entry><string>Data</string><data>{rom_data}</data></entry>')
+    r = client.post("/api/circuit", files=[
+        ("files", ("romlab.dig", xml.encode(), "application/xml"))])
+    assert r.status_code == 200
+    return r.json()["session_id"]
 
 
-def test_debug_endpoint_passes_rom_injected_and_applies_hint(
-        monkeypatch, tmp_path):
-    import shutil
-    sid = _upload_bug3()
-    fake = _canned("analysis", [
-        {"rank": 1, "fix": {"ops": [], "explanation_for_student": "fix X"}}])
+def test_rom_gate_refuses_empty_or_wrong_program_for_free(monkeypatch,
+                                                          tmp_path):
+    import json as _json
+    monkeypatch.setenv("DLC_OFFICIAL_DEFAULTS_PATH",
+                       str(_rom_lab_defaults(tmp_path)))
+    fake = _canned("analysis", [{"rank": 1}])
     monkeypatch.setattr(debugger, "debug_circuit", fake)
+    for data, status in ((None, "empty"), ("5,7", "mismatch")):
+        sid = _upload_romlab(data)
+        body = client.post("/api/llm/debug", json={
+            "session_id": sid, "filename": "romlab.dig"}).json()
+        assert body["ok"] is True and body["mode"] == "rom_mismatch"
+        assert body["rom_check"]["status"] == status
+        assert body["consumed_use"] is False and body["llm_calls"] == 0
+        assert body["rom_verified"] is False
+        assert (body["limits"]["used"] or {}).get("modeA", 0) == 0
+        assert "course program" in body["message"]
+        assert "5,6" not in _json.dumps(body)
+    assert fake.calls == []
+    assert body["rom_check"]["first_bad_address"] == 1
+    assert "your word there is 7" in body["message"]
 
-    import dlc.testing.inject as inject_mod
 
-    def fake_prepare(path, filename):
-        temp = tmp_path / f".dlc_injected__{filename}"
-        shutil.copy(path, temp)
-        return str(temp), [
-            "the course program was loaded into 1 empty ROM for this run "
-            "so your logic could be tested"]
-    monkeypatch.setattr(inject_mod, "prepare_injected_run", fake_prepare)
+def test_rom_gate_lets_the_course_program_through(monkeypatch, tmp_path):
+    monkeypatch.setenv("DLC_OFFICIAL_DEFAULTS_PATH",
+                       str(_rom_lab_defaults(tmp_path)))
+    fake = _canned("analysis", [{"rank": 1}])
+    monkeypatch.setattr(debugger, "debug_circuit", fake)
+    sid = _upload_romlab("5,6")
+    body = client.post("/api/llm/debug", json={
+        "session_id": sid, "filename": "romlab.dig"}).json()
+    assert fake.calls, "a matching ROM must reach the coordinator"
+    assert "rom_injected" not in fake.calls[-1]
+    assert body["mode"] == "analysis"
+    assert body["rom_verified"] is True
+    assert body["consumed_use"] is True
 
-    body = _debug(sid)
-    assert body["rom_injected"] is True
-    assert fake.calls[-1]["rom_injected"] is True
-    assert "Check your ROM data" in body["cards"][0]["fix"]["rom_hint"]
-    assert "Check your ROM data" in (
-        body["cards"][0]["fix"]["explanation_for_student"])
-    assert any("course program" in n for n in body["injected"])
+    sid2 = _upload_bug3()
+    body2 = _debug(sid2)
+    assert body2["rom_verified"] is False
 
 
 def _rom_lab_defaults(tmp_path):

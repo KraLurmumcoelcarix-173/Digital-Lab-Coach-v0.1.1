@@ -530,13 +530,13 @@ def _touches_stored_data(ops_lists: list[list[dict]],
                 return True
     return False
 
-_ROM_INJECTED_NOTE = (
+_ROM_NOTE = (
     "\n\n[ROM NOTE]\n"
-    "The empty ROM(s) in this circuit were loaded from the official "
-    "course program FOR THIS RUN by the grader. Those stored words are "
-    "correct by definition — never propose a Data change on them; the "
-    "failing rows come from wiring, selects, or other components. (The "
-    "student's own file still has that ROM unprogrammed.)"
+    "The instruction-memory ROM in this circuit holds the official course "
+    "program, checked word for word before this run. Those stored words "
+    "are correct by definition — never propose a Data change on that ROM "
+    "(such a change is stripped before verification); the failing rows "
+    "come from wiring, selects, or other components."
 )
 
 _DATA_REFUTED_STEER = (
@@ -623,25 +623,17 @@ def _protected_program_memory(circuit, source_name: str | None) -> set[int]:
             return set()
     except Exception:
         return set()
-    return {i for i, comp in enumerate(circuit.components)
-            if comp.attributes.get("isProgramMemory")}
+    roms = [i for i, comp in enumerate(circuit.components)
+            if comp.element_name == "ROM"]
+    flagged = {i for i in roms
+               if circuit.components[i].attributes.get("isProgramMemory")}
+    return flagged or set(roms)
 
-
-_PROGRAM_MEMORY_NOTE = (
-    "\n\n[PROGRAM MEMORY]\n"
-    "The instruction-memory ROM in this circuit holds the student's OWN "
-    "program — writing course-program words for them is out of scope, "
-    "and any Data change you propose on a program-memory ROM will be "
-    "stripped before verification. If the evidence says its content is "
-    "the problem, name the instruction memory in the hint and propose "
-    "ops only for other components."
-)
 
 _PROGMEM_STUDENT_NOTE = (
-    "The Instruction Memory holds your own program — the coach never "
-    "writes course-program words for you. If you suspect the program "
-    "itself: clear that ROM's Data and re-run; the grader then loads "
-    "the official course program, so you can test your datapath alone."
+    "A proposed rewrite of the instruction memory was dropped: it already "
+    "holds the course program, and the coach never edits it — the bug is "
+    "in the datapath."
 )
 
 
@@ -672,7 +664,6 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
                   jar_mismatches: dict[int, list[dict]] | None = None,
                   coach_rows: list[int] | None = None,
                   lazy_exempt: bool | None = None,
-                  rom_injected: bool = False,
                   source_filename: str | None = None,
                   k_cards: int = K_CARDS) -> dict:
     model = model or _debug_model()
@@ -783,11 +774,13 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
             notes.append(f"Digital runner failed ({type(exc).__name__}); "
                          "falling back to the built-in evaluator.")
 
+    progmem = _protected_program_memory(circuit,
+                                        source_filename or dig_path)
     evres = ev.assemble_evidence(
         circuit, netlist, graph, spec, manifest=manifest,
         failing_indices=failing_indices, jar_mismatches=jar_mismatches,
         lazy_exempt=lazy_exempt,
-        hide_rom_words=rom_injected,
+        hide_rom_words=bool(progmem),
     )
     notes.extend(evres.notes)
 
@@ -859,9 +852,6 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
             refuted_total += 1
         return v
 
-    progmem = _protected_program_memory(circuit,
-                                        source_filename or dig_path)
-
     def norm(clean: dict | None) -> dict | None:
         if clean is None:
             return None
@@ -908,10 +898,8 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
             notes.append("evidence payload was slimmed (net values limited "
                          "to suspect nets) to fit the model context.")
         prompt = prompt_template.replace("<<PAYLOAD_JSON>>", payload_json)
-        if rom_injected:
-            prompt += _ROM_INJECTED_NOTE
         if progmem:
-            prompt += _PROGRAM_MEMORY_NOTE
+            prompt += _ROM_NOTE
 
         reply = ask(prompt)
         if not reply.get("ok"):
@@ -1003,8 +991,7 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
                 prompt = prompt_template.replace(
                     "<<PAYLOAD_JSON>>",
                     json.dumps(payload, default=str)) + (
-                    (_ROM_INJECTED_NOTE if rom_injected else "")
-                    + (_PROGRAM_MEMORY_NOTE if progmem else "")
+                    (_ROM_NOTE if progmem else "")
                     + "\n\n[ESCALATION]\n"
                     + json.dumps({"refuted_ops": tried[ci]}, indent=2,
                                  default=str)
