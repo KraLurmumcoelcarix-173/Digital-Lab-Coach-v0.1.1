@@ -222,7 +222,7 @@ Restart the server (or the proxy) after changing any of these.
 | Daily caps, per-machine budgets, whole-class breaker | the three rows in [Changing the limits](#changing-the-limits) |
 | Course token / admin token | proxy env `DLC_COURSE_TOKEN`, `DLC_ADMIN_TOKEN` ([Rotating the course token](#rotating-the-course-token)) |
 | Where the proxy keeps its ledger | proxy env `DLC_PROXY_DB` (default `./dlc_proxy.db`) |
-| Which model each Layer 3 mode uses | Settings ⚙ in the app (`l3_debug_model`, `l3_propose_model` in `~/.dlc/config.json`), or env `DLC_L3_DEBUG_MODEL` on the machine running the app |
+| Which model each Layer 3 mode uses | The picker on each Layer 3 board (Sonnet default or Opus, per run). The default behind "Sonnet (default)" comes from env DLC_L3_DEBUG_MODEL/DLC_L3_PROPOSE_MODEL, else the l3_debug_model/l3_propose_modelkeys in~/.dlc/config.json|
 | LLM call timeout | env `DLC_LLM_TIMEOUT` (seconds, default 180) |
 | Lecture list Layer 2 cites | `SYLLABUS_311` in [`dlc/llm/explain.py`](dlc/llm/explain.py) ([Adapting the course syllabus](#adapting-the-course-syllabus-layer-2-lecture-tags)) |
 | Lab categories, subcircuit roles and formula models, program decode | one manifest per lab in [`data/manifests/`](data/manifests/) ([docs/MANIFEST_GUIDE.md](docs/MANIFEST_GUIDE.md))|
