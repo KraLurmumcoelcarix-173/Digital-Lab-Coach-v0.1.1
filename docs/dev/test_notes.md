@@ -508,6 +508,7 @@ Mode C (per-spec fallback to Mode B happens automatically).
 | `test_rom_gate_lets_matching_contents_through` | A matching ROM no longer reaches the coordinator, or `rom_verified` is wrong. | `tests/test_server_l3_debug.py` |
 | `test_with_rom_registers_the_file_rom` | `python -m dlc.fingerprint --with-rom` stops emitting the `runtime` blob, or `--merge` drops entries it should keep. | `tests/test_fingerprint_cli.py` |
 | `test_data_op_on_any_rom_is_stripped` | Mode A let a stored-data rewrite through as a fix; stored data is never the fix. | `tests/test_l3_debugger.py` |
+| `test_two_independent_bugs_become_one_stacked_card` | A verified partial fix no longer continues on the repaired circuit, so two independent bugs end as two half cards instead of one complete card. | `tests/test_l3_debugger.py` |
 | `test_prompt_treats_stored_data_as_fixed` | The prompt again asks the model to derive or rewrite ROM contents. | `tests/test_l3_debugger.py` |
 
 ## When you add a new test
@@ -538,3 +539,9 @@ Mode C (per-spec fallback to Mode B happens automatically).
   the state trace: the trace names the write row and the mux is the top
   suspect (`test_l3_evidence.py`), and a `swap_pins` fix verifies
   (`test_l3_debugger.py`). The PC-divergence cut has its own unit test.
+- `bug11_two_independent_gates/`: two outputs, each behind its own wrong
+  gate (an Or that should be an And, an And that should be an XOr), so
+  no single repair passes every row. Guards fix stacking: the first
+  verified repair is applied to a temp copy, the rows still failing are
+  re-analyzed on it with a `[FIXED SO FAR]` block, and the run ends with
+  ONE card carrying both repairs (`test_l3_debugger.py`).

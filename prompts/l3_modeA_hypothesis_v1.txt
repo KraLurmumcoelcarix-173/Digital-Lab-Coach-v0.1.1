@@ -88,6 +88,11 @@ list (the selector's priority hides the quieter wrong gates until the
 loudest is silenced). A [ROM NOTE] block below repeats this rule for
 the run.
 
+[FIXED SO FAR] (present only after an earlier verified partial fix)
+The circuit in this payload already includes the listed repairs, and the
+rows shown are the ones that still fail with them in place. Do not
+repeat those repairs; propose only what remains.
+
 [REFUTED ATTEMPT] (present only on a retry)
 If this block appears, a previous hypothesis was applied and REFUTED by
 the re-run shown there. Propose a DIFFERENT root cause or a corrected fix;

@@ -238,7 +238,8 @@ words stay out of the payload); `# FORMAT RETRY` after a reply that is not the
 strict JSON object (once); `[REFUTED ATTEMPT]` after a refuted fix (once
 per cluster) with the re-run's still-failing and regressed rows, a
 partial-fix steer when the refuted ops repaired some cluster rows;
-`[ESCALATION]` on the
+`[FIXED SO FAR]` after a verified partial fix (the repairs already applied
+to the circuit under analysis, §5 stacking); `[ESCALATION]` on the
 final attempt (§5). Every call is one plain completion: no tools, no
 iteration; the model reasons only over the payload and never invents
 nets, widths or values.
@@ -344,18 +345,28 @@ For each reply, in order:
    original columns — reported per row in `verified.coach_residuals`
    (`{row: [columns]}`), never as still failing. Official rows keep the
    full bar.
-5. **Refuted → one retry** with the `[REFUTED ATTEMPT]` block; the retry's
+5. **Stacking.** A confirmed fix that still leaves rows failing is
+   applied to a temp copy of the circuit under analysis; the rows still
+   failing are re-judged and re-clustered on that copy, and every later
+   call carries a `[FIXED SO FAR]` block naming the repairs already in
+   place. Later confirmed fixes extend the same chain: one card whose ops
+   are applied in order (the `Then:` joins in its explanation mark the
+   rounds), `cluster_rows` the union of rows repaired, `stacked_rounds`
+   the number of rounds. Stacking stops when a fix deletes a component
+   (indices would shift), when nothing remains, or when a round earns no
+   confirmed fix — the chain so far is still the card.
+6. **Refuted → one retry** with the `[REFUTED ATTEMPT]` block; the retry's
    verdict replaces the first when it confirms or when the first patch
    did not even apply.
-6. **Budget.** Every refutation counts; after 4 refuted ideas the run
+7. **Budget.** Every refutation counts; after 4 refuted ideas the run
    stops, the remaining clusters are skipped and the notes say so. A
    confirmed fix that repairs every failing row also skips the remaining
    clusters.
-7. **Escalation.** When a whole run has hypotheses but no confirmed one
+8. **Escalation.** When a whole run has hypotheses but no confirmed one
    and the budget is not spent, each cluster with a valid reply gets one
    more call with `[ESCALATION]` listing all refuted ops — still verified,
    still droppable.
-8. **Rank and dedupe.** Hypotheses are deduplicated by their normalized
+9. **Rank and dedupe.** Hypotheses are deduplicated by their normalized
    ops (confirmed duplicates merge their row sets), ranked by confirmed
    first, then rows covered, then confidence, then cluster order. The
    top 3 confirmed become cards. Every other hypothesis lands in
@@ -387,7 +398,7 @@ For each reply, in order:
   "best_unverified": null,
   "dropped_ideas": [ { "cluster_rows": [], "reason": "refuted", "why": "...",
                        "detail": "...", "ops_pretty": ["..."] } ],
-  "stopped_early": false, "refuted_ideas": 0,
+  "stopped_early": false, "refuted_ideas": 0, "stacked_rounds": 0,
   "timings": {"llm_s": [31.2], "verify_s": [1.4], "total_s": 33.1},
   "verify_runner": "digital",
   "usage": {"input_tokens": 0, "output_tokens": 0}, "llm_calls": 1,

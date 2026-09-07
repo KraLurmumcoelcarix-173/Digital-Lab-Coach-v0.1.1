@@ -665,6 +665,81 @@ _ROM_DECOY = (
 )
 
 
+_BUG11 = ("data/sample_circuits/30_bug_benchmark/bug11_two_independent_gates/"
+          "two_wrong_gates.dig")
+
+
+def _bug11_fixes():
+    from dlc.parser.dig_parser import parse_dig_file
+    circ = parse_dig_file(_BUG11)
+    or_idx = next(i for i, c in enumerate(circ.components)
+                  if c.element_name == "Or")
+    and_idx = next(i for i, c in enumerate(circ.components)
+                   if c.element_name == "And")
+    fix_out1 = [{"op": "replace_element", "component_index": or_idx,
+                 "new_element": "And"}]
+    fix_out2 = [{"op": "replace_element", "component_index": and_idx,
+                 "new_element": "XOr"}]
+    return fix_out1, fix_out2
+
+
+def _per_cluster_fake(fix_out1, fix_out2, max_fixes=99):
+    import re as _re
+
+    def call(prompt, **_kw):
+        call.log.append(prompt)
+        payload = prompt[prompt.index('{"contract"'):]
+        m = _re.search(r'"mismatches": \[\{[^}]*"column": "(Out\d)"', payload)
+        if len(call.log) > max_fixes:
+            text = "nonsense"
+        else:
+            ops = fix_out2 if m and m.group(1) == "Out2" else fix_out1
+            text = json.dumps(_reply(ops, why=f"{m.group(1) if m else '?'} gate"))
+        return {"ok": True, "text": text, "error": None,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "model": "fake"}
+    call.log = []
+    return call
+
+
+def test_two_independent_bugs_become_one_stacked_card():
+    fix_out1, fix_out2 = _bug11_fixes()
+    call = _per_cluster_fake(fix_out1, fix_out2)
+    res = debug_circuit(_BUG11, call=call, use_manifest=False)
+    assert res["mode"] == "analysis"
+    assert res["llm_calls"] == 2
+    assert res["stacked_rounds"] == 1
+    assert "these verified repairs" not in call.log[0]
+    assert "these verified repairs" in call.log[1]
+    assert "- replace [" in call.log[1]
+    assert len(res["cards"]) == 1
+    card = res["cards"][0]
+    assert len(card["fix"]["ops"]) == 2
+    assert sorted(json.dumps(o, sort_keys=True) for o in card["fix"]["ops"]) \
+        == sorted(json.dumps(o, sort_keys=True) for o in fix_out1 + fix_out2)
+    assert len(card["fix"]["ops_pretty"]) == 2
+    assert card["cluster_rows"] == [1, 3, 4, 5, 6]
+    assert " Then: " in card["fix"]["explanation_for_student"]
+    assert not card["verified"]["regressions"]
+    assert not res["dropped_ideas"]
+    assert any("continued on the repaired circuit" in n for n in res["notes"])
+    whole = verify_ops(_BUG11, "two gates", card["fix"]["ops"],
+                       cluster_rows=[1, 3, 4, 5, 6],
+                       original_failing=[1, 3, 4, 5, 6])
+    assert whole["confirmed"] and whole["remaining_failing"] == []
+
+
+def test_partial_fix_without_a_follow_up_stays_a_partial_card():
+    fix_out1, fix_out2 = _bug11_fixes()
+    call = _per_cluster_fake(fix_out1, fix_out2, max_fixes=1)
+    res = debug_circuit(_BUG11, call=call, use_manifest=False)
+    assert res["stacked_rounds"] == 1
+    assert res["llm_calls"] == 3
+    assert len(res["cards"]) == 1
+    assert len(res["cards"][0]["fix"]["ops"]) == 1
+    assert any(d["reason"] == "invalid_response" for d in res["dropped_ideas"])
+
+
 def test_data_op_on_any_rom_is_stripped(tmp_path):
     p = tmp_path / "romdecoy.dig"
     p.write_text(_ROM_DECOY, encoding="utf-8")

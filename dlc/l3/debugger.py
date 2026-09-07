@@ -771,13 +771,17 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
             if r.row_index in want and r.mismatches} or None
     hypotheses: list[dict] = []
     dropped: list[dict] = []
+    work = {"path": str(dig_path), "circuit": circuit, "evres": evres,
+            "failing": original_failing, "consequences": consequences,
+            "round": 0}
+    chain: dict | None = None
+    stacked_temps: list[str] = []
 
     def verify(ops: list[dict], rows: list[int]) -> dict:
-        """verify_ops with central timing + refuted-idea accounting."""
         nonlocal refuted_total
         t0 = time.monotonic()
-        v = verify_ops(str(dig_path), spec.name, ops, rows,
-                       original_failing, jar_path=jar_path,
+        v = verify_ops(work["path"], spec.name, ops, rows,
+                       work["failing"], jar_path=jar_path,
                        coach_targets=coach_targets)
         verify_seconds.append(round(time.monotonic() - t0, 2))
         if not v["confirmed"]:
@@ -810,202 +814,298 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
         clean["ops"] = ops2
         return clean
 
-    for ci, (cluster, payload) in enumerate(
-            zip(evres.clusters, evres.payloads)):
-        if refuted_total >= _MAX_REFUTED_IDEAS:
-            stopped_early = True
-            notes.append(
-                f"analysis stopped after {refuted_total} refuted ideas — "
-                f"remaining cluster(s) skipped; the best surviving idea "
-                f"is returned below.")
-            break
-        cluster_rows = [r.row_index for r in cluster.rows]
-        payload_json = json.dumps(payload, default=str)
-        if len(payload_json) > 250_000:
-            payload = _slim_payload(payload)
-            evres.payloads[ci] = payload
-            payload_json = json.dumps(payload, default=str)
-            notes.append("evidence payload was slimmed (net values limited "
-                         "to suspect nets) to fit the model context.")
-        prompt = prompt_template.replace("<<PAYLOAD_JSON>>", payload_json)
-        if progmem:
-            prompt += _ROM_NOTE
+    def record(h: dict) -> None:
+        nonlocal chain
+        h["round"] = work["round"]
+        h["pretty"] = describe_ops(work["circuit"], h["ops"])
+        if not h["verdict"]["confirmed"] or chain is None:
+            hypotheses.append(h)
+            if h["verdict"]["confirmed"]:
+                chain = h
+            return
+        chain["ops"] = chain["ops"] + h["ops"]
+        chain["pretty"] = chain["pretty"] + h["pretty"]
+        chain["cluster_rows"] = sorted(
+            set(chain["cluster_rows"]) | set(h["cluster_rows"]))
+        chain["confidence"] = min(chain["confidence"], h["confidence"])
+        chain["explanation"] = (chain["explanation"].rstrip() + " Then: "
+                                + h["explanation"]).strip()
+        chain["animation"] = list(chain["animation"]) + list(h["animation"])
+        why = h["hint"].get("why")
+        if why:
+            chain["hint"] = {**chain["hint"],
+                             "why": (f"{chain['hint'].get('why') or ''} "
+                                     f"Then: {why}").strip()}
+        chain["verdict"] = h["verdict"]
 
-        reply = ask(prompt)
-        if not reply.get("ok"):
-            dropped.append({"cluster_rows": cluster_rows,
-                            "reason": "llm_error",
-                            "detail": reply.get("error")})
-            continue
-        clean, err = validate_hypothesis(parse_agent_json(reply.get("text")))
-        if err is not None:
-            if reply.get("stop_reason") == "max_tokens":
-                retry_note = (
-                    "\n\n# FORMAT RETRY\nYour previous reply was CUT "
-                    "OFF at the output token limit before the JSON "
-                    "completed. Do NOT write analysis, derivations, or "
-                    "any text outside the JSON. Reason privately and "
-                    "output ONLY the finished JSON object, immediately.")
-            else:
-                retry_note = (
-                    "\n\n# FORMAT RETRY\nYour previous reply was "
-                    f"rejected: {err}. Output ONLY the JSON object "
-                    "specified above — no prose, no code fences.")
-            retry = ask(prompt + retry_note)
-            clean = None
-            if retry.get("ok"):
-                clean, err = validate_hypothesis(
-                    parse_agent_json(retry.get("text")))
-        if clean is None:
-            dropped.append({"cluster_rows": cluster_rows,
-                            "reason": "invalid_response", "detail": err})
-            continue
-        clean = norm(clean)
-        if clean is None:
-            dropped.append({"cluster_rows": cluster_rows,
-                            "reason": "rom_protected",
-                            "detail": _ROM_STUDENT_NOTE})
-            continue
+    def stack(h: dict) -> bool:
+        if any(op.get("op") == "delete_component" for op in h["ops"]):
+            return False
+        residual = set(h["verdict"].get("coach_residuals") or {})
+        remaining = [r for r in (h["verdict"].get("remaining_failing") or [])
+                     if r not in residual]
+        if not remaining:
+            return False
+        temp, _rep = apply_patch(work["path"], h["ops"])
+        if temp is None:
+            return False
+        stacked_temps.append(temp)
+        try:
+            c2 = parse_dig_file(temp)
+            nl2 = build_netlist(c2)
+            g2 = build_signal_graph(c2, nl2)
+            spec2 = next(s for s in extract_test_specs(c2)
+                         if s.name == spec.name)
+            details = {i: h["verdict"]["details"][i] for i in remaining
+                       if h["verdict"]["details"].get(i)}
+            ev2 = ev.assemble_evidence(
+                c2, nl2, g2, spec2, manifest=manifest,
+                failing_indices=remaining, jar_mismatches=details or None,
+                lazy_exempt=True)
+        except Exception:
+            return False
+        if ev2.mode != "analysis" or not ev2.clusters:
+            return False
+        fixed = sorted(set(work["failing"]) - set(remaining))
+        cons2 = list(getattr(ev2, "consequential_rows", None) or [])
+        work.update(path=temp, circuit=c2, evres=ev2,
+                    failing=sorted(set(remaining) | set(cons2)),
+                    consequences=cons2, round=work["round"] + 1)
+        notes.append(f"a verified fix repairs row(s) {fixed} — the analysis "
+                     f"continued on the repaired circuit for the "
+                     f"{len(remaining)} row(s) still failing.")
+        return True
 
-        verdict = verify(clean["ops"], cluster_rows + consequences)
-        if not verdict["confirmed"] and refuted_total < _MAX_REFUTED_IDEAS:
-            retry = ask(prompt + _refutation_block(clean["ops"], verdict,
-                                                   target_rows=cluster_rows))
-            if retry.get("ok"):
-                clean2, err2 = validate_hypothesis(
-                    parse_agent_json(retry.get("text")))
-                clean2 = norm(clean2)
-                if clean2 is not None:
-                    verdict2 = verify(clean2["ops"], cluster_rows)
-                    if verdict2["confirmed"] or not verdict["apply_ok"]:
-                        clean, verdict = clean2, verdict2
+    def fixed_block() -> str:
+        if chain is None or work["round"] == 0:
+            return ""
+        return ("\n\n[FIXED SO FAR]\n"
+                "The circuit in this payload already includes these verified "
+                "repairs — do not repeat them; propose only the repair(s) for "
+                "the rows still failing:\n"
+                + "\n".join(f"- {p}" for p in chain["pretty"]))
 
-        hypotheses.append({"cluster_index": ci, "cluster_rows": cluster_rows,
-                           "confidence": clean["confidence"],
-                           "hint": clean["hint"], "ops": clean["ops"],
-                           "explanation": clean["explanation"],
-                           "animation": clean["animation"],
-                           "verdict": verdict})
-        if verdict["confirmed"] and not verdict.get("remaining_failing"):
-            if ci + 1 < len(evres.clusters):
-                notes.append(
-                    "a verified fix repairs every failing row — "
-                    "remaining cluster(s) skipped.")
-            break
+    def pretty(h: dict) -> list[str]:
+        return h.get("pretty") or describe_ops(circuit, h["ops"])
 
-    if hypotheses and not any(h["verdict"]["confirmed"] for h in hypotheses):
-        if refuted_total >= _MAX_REFUTED_IDEAS:
-            if not stopped_early:
+    try:
+        ci = 0
+        while ci < len(work["evres"].clusters):
+            if refuted_total >= _MAX_REFUTED_IDEAS:
                 stopped_early = True
                 notes.append(
-                    f"analysis stopped after {refuted_total} refuted "
-                    f"ideas — escalation skipped; the best surviving "
-                    f"idea is returned below.")
-        else:
-            tried: dict[int, list] = {}
-            for h in hypotheses:
-                tried.setdefault(h["cluster_index"], []).append(h["ops"])
-            for ci, (cluster, payload) in enumerate(
-                    zip(evres.clusters, evres.payloads)):
-                if ci not in tried:
-                    continue
-                if refuted_total >= _MAX_REFUTED_IDEAS:
+                    f"analysis stopped after {refuted_total} refuted ideas — "
+                    f"remaining cluster(s) skipped; the best surviving idea "
+                    f"is returned below.")
+                break
+            cluster = work["evres"].clusters[ci]
+            payload = work["evres"].payloads[ci]
+            cluster_rows = [r.row_index for r in cluster.rows]
+            payload_json = json.dumps(payload, default=str)
+            if len(payload_json) > 250_000:
+                payload = _slim_payload(payload)
+                work["evres"].payloads[ci] = payload
+                payload_json = json.dumps(payload, default=str)
+                notes.append("evidence payload was slimmed (net values "
+                             "limited to suspect nets) to fit the model "
+                             "context.")
+            prompt = prompt_template.replace("<<PAYLOAD_JSON>>", payload_json)
+            if progmem:
+                prompt += _ROM_NOTE
+            prompt += fixed_block()
+            ci += 1
+
+            reply = ask(prompt)
+            if not reply.get("ok"):
+                dropped.append({"cluster_rows": cluster_rows,
+                                "reason": "llm_error",
+                                "detail": reply.get("error")})
+                continue
+            clean, err = validate_hypothesis(
+                parse_agent_json(reply.get("text")))
+            if err is not None:
+                if reply.get("stop_reason") == "max_tokens":
+                    retry_note = (
+                        "\n\n# FORMAT RETRY\nYour previous reply was CUT "
+                        "OFF at the output token limit before the JSON "
+                        "completed. Do NOT write analysis, derivations, or "
+                        "any text outside the JSON. Reason privately and "
+                        "output ONLY the finished JSON object, immediately.")
+                else:
+                    retry_note = (
+                        "\n\n# FORMAT RETRY\nYour previous reply was "
+                        f"rejected: {err}. Output ONLY the JSON object "
+                        "specified above — no prose, no code fences.")
+                retry = ask(prompt + retry_note)
+                clean = None
+                if retry.get("ok"):
+                    clean, err = validate_hypothesis(
+                        parse_agent_json(retry.get("text")))
+            if clean is None:
+                dropped.append({"cluster_rows": cluster_rows,
+                                "reason": "invalid_response", "detail": err})
+                continue
+            clean = norm(clean)
+            if clean is None:
+                dropped.append({"cluster_rows": cluster_rows,
+                                "reason": "rom_protected",
+                                "detail": _ROM_STUDENT_NOTE})
+                continue
+
+            verdict = verify(clean["ops"], cluster_rows + work["consequences"])
+            if not verdict["confirmed"] and refuted_total < _MAX_REFUTED_IDEAS:
+                retry = ask(prompt + _refutation_block(
+                    clean["ops"], verdict, target_rows=cluster_rows))
+                if retry.get("ok"):
+                    clean2, err2 = validate_hypothesis(
+                        parse_agent_json(retry.get("text")))
+                    clean2 = norm(clean2)
+                    if clean2 is not None:
+                        verdict2 = verify(clean2["ops"], cluster_rows)
+                        if verdict2["confirmed"] or not verdict["apply_ok"]:
+                            clean, verdict = clean2, verdict2
+
+            h = {"cluster_index": ci - 1, "cluster_rows": cluster_rows,
+                 "confidence": clean["confidence"],
+                 "hint": clean["hint"], "ops": clean["ops"],
+                 "explanation": clean["explanation"],
+                 "animation": clean["animation"],
+                 "verdict": verdict}
+            record(h)
+            if verdict["confirmed"]:
+                if not verdict.get("remaining_failing"):
+                    if ci < len(work["evres"].clusters):
+                        notes.append(
+                            "a verified fix repairs every failing row — "
+                            "remaining cluster(s) skipped.")
+                    break
+                if stack(h):
+                    ci = 0
+
+        if hypotheses and not any(h["verdict"]["confirmed"]
+                                  for h in hypotheses):
+            if refuted_total >= _MAX_REFUTED_IDEAS:
+                if not stopped_early:
                     stopped_early = True
                     notes.append(
                         f"analysis stopped after {refuted_total} refuted "
-                        f"ideas — remaining escalation(s) skipped; the "
-                        f"best surviving idea is returned below.")
-                    break
-                cluster_rows = [r.row_index for r in cluster.rows]
-                prompt = prompt_template.replace(
-                    "<<PAYLOAD_JSON>>",
-                    json.dumps(payload, default=str)) + (
-                    (_ROM_NOTE if progmem else "")
-                    + "\n\n[ESCALATION]\n"
-                    + json.dumps({"refuted_ops": tried[ci]}, indent=2,
-                                 default=str))
-                reply = ask(prompt)
-                if not reply.get("ok"):
-                    continue
-                clean, _err = validate_hypothesis(
-                    parse_agent_json(reply.get("text")))
-                clean = norm(clean)
-                if clean is None:
-                    continue
-                verdict = verify(clean["ops"], cluster_rows + consequences)
-                hypotheses.append({"cluster_index": ci,
-                                   "cluster_rows": cluster_rows,
-                                   "confidence": clean["confidence"],
-                                   "hint": clean["hint"],
-                                   "ops": clean["ops"],
-                                   "explanation": clean["explanation"],
-                                   "animation": clean["animation"],
-                                   "verdict": verdict})
-                if (verdict["confirmed"]
-                        and not verdict.get("remaining_failing")):
-                    break
+                        f"ideas — escalation skipped; the best surviving "
+                        f"idea is returned below.")
+            else:
+                tried: dict[int, list] = {}
+                for h in hypotheses:
+                    if h.get("round") == work["round"]:
+                        tried.setdefault(h["cluster_index"], []).append(
+                            h["ops"])
+                for ci, (cluster, payload) in enumerate(
+                        zip(work["evres"].clusters, work["evres"].payloads)):
+                    if ci not in tried:
+                        continue
+                    if refuted_total >= _MAX_REFUTED_IDEAS:
+                        stopped_early = True
+                        notes.append(
+                            f"analysis stopped after {refuted_total} refuted "
+                            f"ideas — remaining escalation(s) skipped; the "
+                            f"best surviving idea is returned below.")
+                        break
+                    cluster_rows = [r.row_index for r in cluster.rows]
+                    prompt = prompt_template.replace(
+                        "<<PAYLOAD_JSON>>",
+                        json.dumps(payload, default=str)) + (
+                        (_ROM_NOTE if progmem else "")
+                        + fixed_block()
+                        + "\n\n[ESCALATION]\n"
+                        + json.dumps({"refuted_ops": tried[ci]}, indent=2,
+                                     default=str))
+                    reply = ask(prompt)
+                    if not reply.get("ok"):
+                        continue
+                    clean, _err = validate_hypothesis(
+                        parse_agent_json(reply.get("text")))
+                    clean = norm(clean)
+                    if clean is None:
+                        continue
+                    verdict = verify(clean["ops"],
+                                     cluster_rows + work["consequences"])
+                    record({"cluster_index": ci,
+                            "cluster_rows": cluster_rows,
+                            "confidence": clean["confidence"],
+                            "hint": clean["hint"],
+                            "ops": clean["ops"],
+                            "explanation": clean["explanation"],
+                            "animation": clean["animation"],
+                            "verdict": verdict})
+                    if (verdict["confirmed"]
+                            and not verdict.get("remaining_failing")):
+                        break
 
-    ranked = dedupe_hypotheses(hypotheses)
-    cards: list[dict] = []
-    carded: set[int] = set()
-    for i, h in enumerate(ranked):
-        if not h["verdict"]["confirmed"] or len(cards) >= k_cards:
-            continue
-        carded.add(i)
-        cards.append({
-            "rank": len(cards) + 1,
-            "confidence": h["confidence"],
-            "cluster_rows": h["cluster_rows"],
-            "hint": h["hint"],
-            "verified": {
-                "confirmed": True,
-                "runner": h["verdict"]["runner"],
-                "regressions": h["verdict"]["regressions"],
-                "coach_residuals": h["verdict"].get("coach_residuals") or {},
-            },
-            "fix": {
-                "ops": h["ops"],
-                "ops_pretty": describe_ops(circuit, h["ops"]),
-                "explanation_for_student": h["explanation"],
-                "animation_script": validate_animation(
-                    h["animation"], len(circuit.components)),
-            },
-        })
-    for i, h in enumerate(ranked):
-        if i in carded:
-            continue
-        if h["verdict"]["confirmed"]:
-            reason = "beyond_top_k"
-        elif h["verdict"]["apply_ok"]:
-            reason = "refuted"
-        else:
-            reason = "patch_failed"
-        det = h["verdict"]["warning"]
-        dropped.append({
-            "cluster_rows": h["cluster_rows"],
-            "reason": reason,
-            "why": h["hint"].get("why") or h["hint"].get("suspect_region"),
-            "detail": det,
-            "ops_pretty": describe_ops(circuit, h["ops"]),
-        })
-    best_unverified = None
-    if not cards and ranked:
-        b = ranked[0]
-        best_unverified = {
-            "confidence": b["confidence"],
-            "cluster_rows": b["cluster_rows"],
-            "hint": b["hint"],
-            "fix": {"ops": b["ops"],
-                    "ops_pretty": describe_ops(circuit, b["ops"]),
-                    "explanation_for_student": b["explanation"]},
-            "verdict": {"apply_ok": b["verdict"]["apply_ok"],
-                        "runner": b["verdict"]["runner"],
-                        "still_failing": b["verdict"]["still_failing"],
-                        "regressions": b["verdict"]["regressions"],
-                        "coach_residuals":
-                            b["verdict"].get("coach_residuals") or {},
-                        "warning": b["verdict"]["warning"]},
-        }
+        ranked = dedupe_hypotheses(hypotheses)
+        cards: list[dict] = []
+        carded: set[int] = set()
+        for i, h in enumerate(ranked):
+            if not h["verdict"]["confirmed"] or len(cards) >= k_cards:
+                continue
+            carded.add(i)
+            cards.append({
+                "rank": len(cards) + 1,
+                "confidence": h["confidence"],
+                "cluster_rows": h["cluster_rows"],
+                "hint": h["hint"],
+                "verified": {
+                    "confirmed": True,
+                    "runner": h["verdict"]["runner"],
+                    "regressions": h["verdict"]["regressions"],
+                    "coach_residuals": h["verdict"].get("coach_residuals") or {},
+                },
+                "fix": {
+                    "ops": h["ops"],
+                    "ops_pretty": pretty(h),
+                    "explanation_for_student": h["explanation"],
+                    "animation_script": validate_animation(
+                        h["animation"], len(work["circuit"].components)),
+                },
+            })
+        for i, h in enumerate(ranked):
+            if i in carded:
+                continue
+            if h["verdict"]["confirmed"]:
+                reason = "beyond_top_k"
+            elif h["verdict"]["apply_ok"]:
+                reason = "refuted"
+            else:
+                reason = "patch_failed"
+            det = h["verdict"]["warning"]
+            dropped.append({
+                "cluster_rows": h["cluster_rows"],
+                "reason": reason,
+                "why": h["hint"].get("why") or h["hint"].get("suspect_region"),
+                "detail": det,
+                "ops_pretty": pretty(h),
+            })
+        best_unverified = None
+        if not cards and ranked:
+            b = ranked[0]
+            best_unverified = {
+                "confidence": b["confidence"],
+                "cluster_rows": b["cluster_rows"],
+                "hint": b["hint"],
+                "fix": {"ops": b["ops"],
+                        "ops_pretty": pretty(b),
+                        "explanation_for_student": b["explanation"]},
+                "verdict": {"apply_ok": b["verdict"]["apply_ok"],
+                            "runner": b["verdict"]["runner"],
+                            "still_failing": b["verdict"]["still_failing"],
+                            "regressions": b["verdict"]["regressions"],
+                            "coach_residuals":
+                                b["verdict"].get("coach_residuals") or {},
+                            "warning": b["verdict"]["warning"]},
+            }
+    finally:
+        for t in stacked_temps:
+            try:
+                os.unlink(t)
+            except OSError:
+                pass
 
     return {**base, "mode": "analysis",
             "diagnosis_lines": ([_diagnosis_line(c) for c in evres.clusters]
@@ -1016,6 +1116,7 @@ def debug_circuit(dig_path: str, *, spec_name: str | None = None,
             "dropped_ideas": dropped,
             "stopped_early": stopped_early,
             "refuted_ideas": refuted_total,
+            "stacked_rounds": work["round"],
             "timings": {"llm_s": llm_seconds, "verify_s": verify_seconds,
                         "total_s": round(time.monotonic() - t_begin, 2)},
             "verify_runner": "digital" if jar else "evaluator",
