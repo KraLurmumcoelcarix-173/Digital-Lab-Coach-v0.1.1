@@ -1,67 +1,50 @@
 # Configuring DLC for your own lab (instructor guide)
 
-Related Doc: ROM payloads — `instructor_rom_config.md`; course proxy
-deployment — `../proxy/README.md`.
+Related: ROM payloads — `instructor_rom_config.md`; course proxy —
+`../proxy/README.md`.
 
-DLC works on any Digital (`.dig`) circuit out of the box: structural
-coverage (mux arms, boundaries, constant outputs and every structural
-health check) needs **zero configuration**. What this guide adds is the
-*intent* layer — the small amount of course knowledge that turns "arm 2 is
-never selected" into "the `sub` instruction is never tested", protects your
-official tests, tells the debugger what each subcircuit is for, and unlocks
-the RISC-V program coach.
+DLC works on any Digital (`.dig`) circuit with **zero configuration**:
+structural checks, signal flow, test coverage by mux arm and boundary,
+Mode A debugging. A *manifest* adds course meaning on top: which
+instruction or digit each input pattern stands for, what each subcircuit
+is for, and how to read a program word. That turns "arm 2 is never
+selected" into "the `sub` instruction is never tested" and lets the
+coach reason about a CPU's program.
 
-Two local artifacts:
-
-| Artifact | What it is | Where it lives |
+| You maintain | What it is | Where |
 |---|---|---|
-| **Manifest** (a json) | Names your lab's test categories, the role and formula model of each subcircuit, and how to decode program words | `data/manifests/<your-lab>.json` in your fork |
-| **Official tests** | The instructor-issued testcase per file | Settings ⚙ → Official tests (stored in `~/.dlc/official_tests.json`), or shipped defaults in `data/official_tests_defaults.json` |
+| **Manifest** | One JSON per lab: categories, subcircuit roles, program decode | `data/manifests/*.json` in your fork, or a folder named by `DLC_MANIFEST_DIR` |
+| **Official tests** | The instructor's testcase per file | Settings ⚙ → Official tests; shipped defaults in `data/official_tests_defaults.json` |
 
-A manifest holds only **input patterns and names** (which opcode values
-exist, which digit each ABCD pattern means, which known function a
-subcircuit computes). It has no expected outputs, no wiring, no solution
-content. Set `DLC_MANIFEST_DIR` to keep your manifests in a folder
-outside the repo checkout.
+A manifest holds only input patterns and names. No expected outputs, no
+wiring, no solution content ever goes in it.
 
 ---
 
-## Quickstart: a new lab in five steps
+## Quick start
 
-DLC's "server" is the tool itself, running on each user's own machine —
-there is no shared server to configure. A manifest is only needed when the
-lab needs semantic interpretation (opcode / RISC-V decode, display-digit
-classes, subcircuit roles); the shipped defaults already cover the 311
-course labs.
-
-1. **Fork the repo** (or work in your local clone).
-2. **Register the official tests**: Settings ⚙ → Official tests → filename
-   + paste the testcase rows (the header line + data rows exactly as in
-   the `.dig`'s test editor; content must be valid Digital test format —
-   the tool rejects anything else). Comments and spacing are ignored by
-   the match, changed rows are not.
-3. **(Forks) Ship the official tests as built-in defaults** — generate
-   ready-made entries straight from your `.dig` files with the
-   fingerprint helper:
+1. **Register the official tests**: Settings ⚙ → Official tests →
+   filename + the testcase rows (header line plus data rows, as in
+   Digital's test editor). Comments and spacing do not matter; changed
+   rows do.
+2. **Ship them as defaults** (forks): generate the entries from the
+   `.dig` files and merge them into `data/official_tests_defaults.json`:
 
        uv run python -m dlc.fingerprint cpu.dig register-file.dig -o defaults.json
 
-   It reads each file's first testcase and emits
-   `{"<file>.dig": {"content": "...", "sha1": "..."}}` — merge those
-   entries into `data/official_tests_defaults.json` in your fork, done.
-   The sha1 is the same normalized fingerprint the Settings list shows;
-   `--hashes-only` prints the `{filename: sha1}` shape used by a
-   manifest's `official_tests` block instead.
-4. **Write the manifest** — copy `data/manifests/tier3_latched_display.json`
-   as a template and edit (details below). Drop it in `data/manifests/`,
-   **named after the lab's top-level `.dig`**.
-5. **Validate**: upload the lab, open L3 Coach, run the Coverage Coach.
-   You should see `lab manifest '<name>' applied` in the whole-tree notes
-   and a `categories N/M` chip on the file. If not, see Troubleshooting.
+3. **Write the manifest**: copy `data/manifests/tier3_latched_display.json`
+   (a display lab) or `cpu_new.json` (a RISC-V CPU) and edit the blocks
+   below. Any filename works; DLC matches manifests by `applies_to`.
+4. **Check it**: upload the lab, open the Layer 3 tab, run the Coverage
+   Coach. The notes should say `lab manifest '<name>' applied` and each
+   configured file shows a `categories N/M` chip.
+
+The shipped manifests already cover the COMP 311 labs. A lab without
+opcodes, digit classes or subcircuit roles needs no manifest at all.
 
 ---
 
-## The manifest, block by block
+## The manifest
 
 ```json
 {
@@ -69,72 +52,70 @@ course labs.
   "applies_to": ["my-top.dig", "my-sub.dig"],
   "subcircuits": { ... },
   "categories": { ... },
+  "program_decode": { ... },
   "official_tests": {},
   "reference_dir": null
 }
 ```
 
-- `lab` — any short name; shown in the scan notes.
-- `applies_to` — the EXACT filenames of your lab (matching is by
-  filename; if students rename files, the manifest will not attach).
-- `official_tests` — optional sha1 fingerprints (the Settings store
-  usually replaces this; leave `{}`).
-- `reference_dir` — leave `null`. If you keep solution circuits on YOUR
-  machine, point the `DLC_REFERENCE_DIR` environment variable at that
-  folder when starting the server: proposed rows are then also checked
-  against the solutions before students see them. Never ship solutions.
+- `lab` — a short name, shown in the notes.
+- `applies_to` — the exact filenames of the lab. The manifest that covers
+  the most uploaded files wins, so two labs may share subcircuit files.
+  A display lab can also attach by element kind with
+  `"applies_to_elements": ["Seven-Seg"]`.
+- `official_tests` — optional sha1 fingerprints (`dlc.fingerprint
+  --hashes-only`); the Settings store normally makes this unnecessary,
+  leave `{}`.
+- `reference_dir` — leave `null`. To double-check coach proposals against
+  solution circuits kept on **your** machine, set the environment variable
+  `DLC_REFERENCE_DIR` to that folder when you start the server. Solutions
+  never ship.
 
-### `subcircuits` — role and formula model of each child
-
-Layer 3 Mode A only starts once every subcircuit passes its own tests, so
-while it debugs the top circuit it can treat a passing child as the
-function it is supposed to compute instead of simulating it gate by gate.
-DLC ships these **formula models**:
-
-| Model | Interface it expects | Computes |
-|---|---|---|
-| `rv32i_alu` | A, B, ALUOp → Result, FlagZ | AND, OR, ADD, XOR, SLL, SRL, SUB, SLT, SRA, SLTU (shifts A by B) |
-| `lab5_alu` | A, B, ALUOp → Result, FlagZ | the original Lab 5 ALU: same codes without SLTU, shifts B by A |
-| `lab5_control` | opcode, funct3, funct7 → the eight Lab 5 signals | decode table, unknown word decodes as `add` |
-| `rv32i_control` | opcode, funct3, funct7 → up to 17 signals | decode table for all 37 RV32I instructions, unknown word is a NOP |
-| `rv32i_register_file` | ReadReg1, ReadReg2, WriteReg, WriteData, RegWrite, Clock → ReadData1, ReadData2 | 32 registers, edge-triggered write, x0 stays 0 |
-| `add_sub` | A, B, Sub → Out, Overflow, Sign | add / subtract with flags |
-| `boolean_unit` | A, B, Bool → Out | AND, OR, XOR, NOR |
-| `bidirectional_shifter` | A, B, Bool → Out | B shifted by A: left, right logical, right arithmetic |
-| `slt_unit` | Sign, Overflow → Result | signed less-than from the flags |
-| `rv32i_immgen` | Instr, ImmSrc → Imm | I, S, B, U, J immediates |
-| `rv32i_branch_unit` | A, B, funct3, Branch, Jump → Taken | the six branch conditions plus jump |
-| `rv32i_data_memory` | Addr, WriteData, MemWrite, funct3, Clock → ReadData | 32 words, byte/half/word loads and stores |
-
-Without any manifest entry DLC picks a model by the child's interface
-(labels and widths) and uses it **only after it reproduces every row of
-the child's own testcase**; a child without a testcase is simulated as
-drawn. The block lets you decide per file:
+### `subcircuits` — what each child is for
 
 ```json
 "subcircuits": {
-  "alu.dig":  {"model": "rv32i_alu",
-               "role": "ALU: applies the operation selected by ALUOp to A and B."},
+  "alu.dig":       {"model": "rv32i_alu",
+                    "role": "ALU: applies the operation selected by ALUOp to A and B."},
   "my-lookup.dig": {"model": "simulate",
                     "role": "Seven-segment lookup for digits 0-9."}
 }
 ```
 
-- `model` — a name from the table, used as vouched for (its interface
-  must still fit) even when the child has no testcase; `"simulate"`
-  forces gate-level simulation for that file.
-- `role` — one line, in your words: what this block is for. Layer 2 shows
-  it on the subcircuit's card and Layer 3 quotes it; leave it out to fall
-  back to the model's own description.
+- `role` — one line in your words. Layer 3 quotes it when it debugs the
+  parent.
+- `model` — the formula DLC may use in place of a passing child while it
+  debugs the parent circuit (Mode A only starts once every child passes
+  its own tests). Without an entry DLC picks a model by the child's
+  interface and uses it only after it reproduces every row of the child's
+  own testcase. Naming a model here vouches for it, so it is also used
+  when the child has no testcase; `"simulate"` keeps gate-level
+  simulation for that file. Layer 1 never uses models: students always
+  see their own child's signals.
 
-Every Mode A run lists what it did in its notes (`subcircuits evaluated
-as formula models: alu.dig → rv32i_alu, ...`), and Layer 1's signal flow
-never uses a model — students always see what their own child does.
+Shipped formulas:
 
-### `categories` — name the cases that matter
+| Model | Interface | Computes |
+|---|---|---|
+| `rv32i_alu` | A, B, ALUOp → Result, FlagZ | AND, OR, ADD, XOR, SLL, SRL, SUB, SLT, SRA, SLTU (shifts A by B) |
+| `lab5_alu` | A, B, ALUOp → Result, FlagZ | the original Lab 5 ALU: same codes without SLTU, shifts B by A |
+| `lab5_control` | opcode, funct3, funct7 → the eight Lab 5 signals | Lab 5 decode table |
+| `rv32i_control` | opcode, funct3, funct7 → up to 17 signals | all 37 RV32I instructions; unknown word = NOP |
+| `rv32i_register_file` | ReadReg1, ReadReg2, WriteReg, WriteData, RegWrite, Clock → ReadData1, ReadData2 | 32 registers, x0 stays 0 |
+| `add_sub` | A, B, Sub → Out, Overflow, Sign | add / subtract with flags |
+| `boolean_unit` | A, B, Bool → Out | AND, OR, XOR, NOR |
+| `bidirectional_shifter` | A, B, Bool → Out | B shifted by A: left, right, arithmetic right |
+| `slt_unit` | Sign, Overflow → Result | signed less-than from the flags |
+| `rv32i_immgen` | Instr, ImmSrc → Imm | I, S, B, U, J immediates |
+| `rv32i_branch_unit` | A, B, funct3, Branch, Jump → Taken | the six branch conditions plus jump |
+| `rv32i_data_memory` | Addr, WriteData, MemWrite, funct3, Clock → ReadData | 32 words, byte/half/word access |
 
-One list per file. Each category = a name + the input cells that
-identify it, using the **testcase's own column names**:
+The formulas themselves are code, in `dlc/sim/models.py`: one function per
+model plus a registration line naming its inputs and outputs. To add a
+unit of your own, add a function and a registration there; the manifest
+only refers to it by name.
+
+### `categories` — the cases that matter
 
 ```json
 "categories": {
@@ -145,20 +126,19 @@ identify it, using the **testcase's own column names**:
 }
 ```
 
-A circuit is category-GREEN when every named category is matched by at
-least one test row. The Coverage Coach proposes rows for the missing
-ones, and its category claims are checked deterministically — the model
-cannot mislabel a row.
+- One list per file; a category is a name plus the input cells that
+  identify it, written with the testcase's own column names. Values may be
+  decimal, `0x…` or `0b…`.
+- A file is green when every category is matched by at least one test
+  row; the Coverage Coach proposes rows for the missing ones.
+- Every column in a `when` must exist in that file's testcase header,
+  otherwise the manifest stays silent for that file.
 
-Values may be written as decimal, `0x...`, or `0b...`. Every column
-named in a `when` must exist in that file's testcase header, or the
-manifest stays silent for that file (by design — it never guesses).
+### `program_decode` — RISC-V CPUs
 
-### `program_decode` — RISC-V CPUs (copy-paste block)
-
-For a CPU whose instructions come from a program ROM (a ROM component
-with *Program Memory* checked), add this block. For any RV32I lab you
-can copy it **verbatim** — the bit fields are the RISC-V standard:
+For a CPU that fetches from a program ROM (a ROM with *Program Memory*
+checked). The bit fields are the RISC-V standard, so any RV32I lab can
+copy the block as is:
 
 ```json
 "program_decode": {
@@ -172,63 +152,57 @@ can copy it **verbatim** — the bit fields are the RISC-V standard:
 }
 ```
 
-Adjust only two things:
+- `categories_from` — the file whose `categories` list names the
+  instructions the lab implements (usually the control unit, with
+  categories over `opcode` / `funct3` / `funct7`). `cpu.json` lists the
+  eight Lab 5 instructions, `cpu_new.json` all 37 of RV32I.
+- `observe` — the CPU testcase's columns for the two register-file read
+  ports and, if the program parks in a `jal x0, 0` halt loop, the program
+  counter. With them the coach reads back every value an extension writes
+  and splices new words in front of the halt loop, where they execute.
 
-- `categories_from`: the file whose `categories` list enumerates the
-  instructions your lab implements (typically your control/decode unit —
-  categories written over `opcode`/`funct3`/`funct7` columns). Two
-  shipped examples: `data/manifests/cpu.json` (the eight-instruction
-  Lab 5 subset) and `data/manifests/cpu_new.json` (all 37 RV32I
-  instructions — copy its `controlunit.dig` list for any full RV32I lab).
-- `observe`: the CPU testcase's column names that show the register-file
-  read ports, and (optional) the program counter. The read ports let the
-  coach add machine-derived read-back rows (`addi x0, xN, 0`) so every
-  value an extension writes is actually observed; `pc_port` lets it
-  place an extension correctly when the program **parks in a halt loop**
-  (`jal x0, 0`): the new words are spliced in front of the loop, where
-  they actually execute, and the rows that expect the loop's PC move
-  down accordingly. Without `pc_port` a halted program can only be
-  extended by appending, which never executes — leave it out only for
-  programs that run straight off the end.
-
-With this block the tool decodes every program word deterministically,
-rejects lazy or undefined instructions, derives register and memory
-values by running the program through a small RV32I interpreter that
-follows branches and jumps, and — if the model's proposal fails its
-gates — machine-builds a correct extension on its own (this part even
-works offline).
+With this block the coach decodes every program word, runs the program
+through a small RV32I interpreter, and can build a correct extension on
+its own when the model's proposal fails verification.
 
 ---
 
-## What anyone can and cannot do in Settings
+## Choosing the model
 
-- **Built-in defaults are view-only for everyone** — the only way to
-  raise a default's standard is *Adopt into official tests* after a
-  Coverage Coach run ends **all set** (server-side, from the verified
-  temp circuit — no free-form editing). An Adopt override can always be
-  deleted to revert to the shipped default.
-- **Anyone may add official tests for their own labs as test standards**
-  (filename + testcase content); content is validated as Digital test
-  format and rejected otherwise. These entries stay fully editable and
-  deletable.
-- Manifests are repo/fork files — configuring a NEW lab's semantics
-  (categories, subcircuit roles and models, program decode) is the
-  instructor's (fork owner's) job, per the quickstart above.
+Each Layer 3 board has a model picker: **Sonnet 4.6 (default)** or
+**Opus 5**, stronger on hard bugs and costlier per run. The choice applies
+to that run only.
+
+What "(default)" means comes from the machine running the app, in this
+order: the environment variables `DLC_L3_DEBUG_MODEL` (Mode A) and
+`DLC_L3_PROPOSE_MODEL` (Mode B), else the keys `l3_debug_model` and
+`l3_propose_model` in `~/.dlc/config.json`, else the built-in default.
+There is no model field in Settings. Through the course proxy the same
+choice applies and the course key pays.
+
+---
+
+## Official tests: who can change what
+
+- Built-in defaults are view-only. They change only through *Adopt into
+  official tests* after a Coverage Coach run ends **all set**; an adopted
+  override can be deleted to return to the default.
+- Anyone may add official tests for their own labs (filename + testcase
+  content, validated as Digital test format); those entries stay editable.
+- Manifests are files in the fork: giving a new lab its meaning is the
+  instructor's job.
 
 ## Troubleshooting
 
-- **No `manifest applied` note** → a filename in the uploaded tree must
-  appear in `applies_to`; check exact spelling and case.
-- **No `categories` chip** → a `when` column name doesn't match the
-  file's testcase header exactly; the manifest stays silent rather than
-  guess.
-- **`official test` chip missing** → the file has no entry in Settings →
-  Official tests (or the content was modified — the chip then says
-  `modified`, which is the point).
-- **Program coach inactive** → the ROM component must have *Program
-  Memory* checked in Digital; `program_decode` must be present; the
-  testcase needs a clock column.
-- **A child is still "simulated as drawn" in the Mode A notes** → its
-  interface matches no model, or the model disagreed with the child's own
-  testcase (the note says which row). Name the model in `subcircuits` to
-  vouch for it, or fix the child's test.
+- **No `manifest applied` note** → a filename in the upload must appear
+  in `applies_to`; check spelling and case.
+- **No `categories` chip** → a `when` column does not match the file's
+  testcase header exactly.
+- **`official test` chip missing** → no entry for that filename in
+  Settings, or the file's rows were modified (the chip then says so).
+- **Program coach inactive** → the ROM needs *Program Memory* checked,
+  the manifest needs `program_decode`, the testcase needs a clock column.
+- **A child is "simulated as drawn" in the Mode A notes** → no model fits
+  its interface, or the model disagreed with the child's own testcase (the
+  note names the row). Name the model in `subcircuits` to vouch for it, or
+  fix the child's test.
