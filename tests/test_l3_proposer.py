@@ -204,25 +204,38 @@ def test_propose_rows_refuses_on_select_gate_with_zero_model_calls():
     assert "'Op'" in out["error"] and "value 3" in out["error"]
 
 
-def _and_manifest(tmp_path, monkeypatch, categories):
+def _and_manifest(tmp_path, monkeypatch, categories, *, decode=False):
     mdir = tmp_path / "manifests"
     mdir.mkdir(exist_ok=True)
-    (mdir / "and.json").write_text(json.dumps({
-        "lab": "and", "applies_to": ["single_and.dig"],
-        "categories": {"single_and.dig": categories},
-        "official_tests": {}, "reference_dir": None,
-    }))
+    m = {"lab": "and", "applies_to": ["single_and.dig"],
+         "categories": {"single_and.dig": categories},
+         "official_tests": {}, "reference_dir": None}
+    if decode:
+        m["program_decode"] = {"categories_from": "single_and.dig"}
+    (mdir / "and.json").write_text(json.dumps(m))
     monkeypatch.setenv("DLC_MANIFEST_DIR", str(mdir))
 
 
-def test_propose_rows_stops_when_every_category_is_covered(tmp_path, monkeypatch):
-    _and_manifest(tmp_path, monkeypatch, [
-        {"name": "both_high", "when": {"A": 1, "B": 1}},
-        {"name": "a_low", "when": {"A": 0}},
-    ])
+def _counting_fake(calls):
+    def fake(prompt, **kw):
+        calls.append(prompt)
+        return {"ok": True, "text": "{}", "error": None, "usage": None,
+                "model": kw.get("model")}
+    return fake
+
+
+def test_propose_rows_stops_only_for_a_complete_decode_file(tmp_path, monkeypatch):
+    complete = [{"name": "both_high", "when": {"A": 1, "B": 1}},
+                {"name": "a_low", "when": {"A": 0}}]
+    _and_manifest(tmp_path, monkeypatch, complete)
+    calls = []
+    out = proposer.propose_rows(_AND, call=_counting_fake(calls))
+    assert calls and out["ok"] is True
+    assert "all_categories_covered" not in out
+    _and_manifest(tmp_path, monkeypatch, complete, decode=True)
 
     def dead(prompt, **_kw):
-        raise AssertionError("a complete file must not reach the model")
+        raise AssertionError("a complete decode file must not reach the model")
 
     out = proposer.propose_rows(_AND, call=dead)
     assert out["ok"] is True and out["proposals"] == []
@@ -231,21 +244,151 @@ def test_propose_rows_stops_when_every_category_is_covered(tmp_path, monkeypatch
     assert out["notes"] == ["single_and.dig: all 2 instruction categories are "
                             "already exercised by your rows — the coach has "
                             "nothing to add."]
-
     _and_manifest(tmp_path, monkeypatch, [
         {"name": "both_high", "when": {"A": 1, "B": 1}},
         {"name": "never", "when": {"A": 2}},
-    ])
+    ], decode=True)
+    calls = []
+    out2 = proposer.propose_rows(_AND, call=_counting_fake(calls))
+    assert calls and out2["ok"] is True
+    assert "all_categories_covered" not in out2
+
+
+def test_complete_targets_keeps_the_program_complete_stop():
+    from types import SimpleNamespace as NS
+    report = NS(circuits=[NS(file="cpu.dig", categories_total=0,
+                             categories_missing=[])])
+    target = {"file": "cpu.dig", "has_program_rom": True,
+              "program_categories_present": ["add", "sub"],
+              "program_categories_missing": []}
+    done = proposer._complete_targets(report, [target], {"program_decode": {
+        "categories_from": "control-unit.dig"}})
+    assert "executes all 2 instruction categories" in done["cpu.dig"]
+    target["program_categories_missing"] = ["lw"]
+    assert proposer._complete_targets(report, [target], {}) == {}
+
+
+_SHIFTER_XML = """<?xml version="1.0" encoding="utf-8"?>
+<circuit>
+  <version>2</version>
+  <attributes/>
+  <visualElements>
+    <visualElement><elementName>In</elementName><elementAttributes>
+      <entry><string>Label</string><string>A</string></entry>
+      <entry><string>Bits</string><int>32</int></entry>
+    </elementAttributes><pos x="0" y="0"/></visualElement>
+    <visualElement><elementName>In</elementName><elementAttributes>
+      <entry><string>Label</string><string>B</string></entry>
+      <entry><string>Bits</string><int>32</int></entry>
+    </elementAttributes><pos x="0" y="40"/></visualElement>
+    <visualElement><elementName>In</elementName><elementAttributes>
+      <entry><string>Label</string><string>Bool</string></entry>
+      <entry><string>Bits</string><int>2</int></entry>
+    </elementAttributes><pos x="0" y="80"/></visualElement>
+    <visualElement><elementName>Out</elementName><elementAttributes>
+      <entry><string>Label</string><string>Out</string></entry>
+      <entry><string>Bits</string><int>32</int></entry>
+    </elementAttributes><pos x="200" y="40"/></visualElement>
+    <visualElement><elementName>Testcase</elementName><elementAttributes>
+      <entry><string>Label</string><string>shift</string></entry>
+      <entry><string>Testdata</string><testData><dataString>A B Bool Out
+0 5 2 5
+0 1 2 1</dataString></testData></entry>
+    </elementAttributes><pos x="0" y="-100"/></visualElement>
+  </visualElements>
+  <wires><wire><p1 x="0" y="40"/><p2 x="200" y="40"/></wire></wires>
+</circuit>
+"""
+
+
+def test_model_gate_judges_rows_by_the_labs_formula_model(tmp_path, monkeypatch):
+    mdir = tmp_path / "manifests"
+    mdir.mkdir()
+    (mdir / "shift.json").write_text(json.dumps({
+        "lab": "shift", "applies_to": ["shifter.dig"],
+        "subcircuits": {"shifter.dig": {"model": "bidirectional_shifter",
+                                        "role": "shifter"}},
+        "categories": {}, "official_tests": {}, "reference_dir": None}))
+    monkeypatch.setenv("DLC_MANIFEST_DIR", str(mdir))
+    p = tmp_path / "shifter.dig"
+    p.write_text(_SHIFTER_XML, encoding="utf-8")
+    spec_name = proposer.build_targets(scan_tree_coverage(str(p)))[0]["spec_name"]
+    rows = ["0x00000000 0xDEADBEEF 2 0xDEADBEEF",
+            "0x0000001F 0x00000003 0 0x80000000",
+            "0x0000001F 0x80000000 3 0xFFFFFFFF",
+            "0x0000001F 0x80000000 2 0x00000001",
+            "0x0000001F 0x80000000 2 0x00000002"]
+    text = json.dumps({"proposals": [
+        {"file": "shifter.dig", "spec_name": spec_name, "rows": rows,
+         "why": "shift-amount boundaries"}]})
     calls = []
 
     def fake(prompt, **kw):
         calls.append(prompt)
-        return {"ok": True, "text": "{}", "error": None, "usage": None,
+        return {"ok": True, "text": text, "error": None, "usage": None,
                 "model": kw.get("model")}
 
-    out2 = proposer.propose_rows(_AND, call=fake)
-    assert calls and out2["ok"] is True
-    assert "all_categories_covered" not in out2
+    out = proposer.propose_rows(str(p), call=fake)
+    assert out["ok"] is True
+    assert len(calls) == 1, "no self-check call once the model confirmed the rows"
+    assert out["proposals"][0]["rows"] == rows[:4]
+    assert not out["proposals"][0].get("disputed_rows")
+    assert any("confirmed by the lab's formula model (bidirectional_shifter)"
+               in n for n in out["notes"])
+    bad = out["rejected"][0]
+    assert bad["rows"] == [rows[4]]
+    assert "formula model" in bad["reason"] and "Out=0x1" in bad["reason"]
+    assert bad["kind"] == "wrong_expectation"
+
+
+def _shifter_proposal(tmp_path, monkeypatch, manifest, xml=_SHIFTER_XML):
+    mdir = tmp_path / "manifests"
+    mdir.mkdir(exist_ok=True)
+    (mdir / "shift.json").write_text(json.dumps(manifest))
+    monkeypatch.setenv("DLC_MANIFEST_DIR", str(mdir))
+    p = tmp_path / "shifter.dig"
+    p.write_text(xml, encoding="utf-8")
+    spec_name = proposer.build_targets(scan_tree_coverage(str(p)))[0]["spec_name"]
+    rows = ["0x0000001F 0x00000003 0 0x80000000",
+            "0x0000001F 0x80000000 3 0xFFFFFFFF"]
+    text = json.dumps({"proposals": [
+        {"file": "shifter.dig", "spec_name": spec_name, "rows": rows,
+         "why": "boundaries"}]})
+    selfcheck = json.dumps({"rows": [{"index": 0, "outputs": {"Out": "0"}},
+                                     {"index": 1, "outputs": {"Out": "0"}}]})
+    calls = []
+
+    def fake(prompt, **kw):
+        calls.append(prompt)
+        return {"ok": True, "text": text if len(calls) == 1 else selfcheck,
+                "error": None, "usage": None, "model": kw.get("model")}
+
+    return proposer.propose_rows(str(p), call=fake), rows, calls
+
+
+def test_model_gate_never_guesses_a_model_from_port_names(tmp_path, monkeypatch):
+    out, rows, calls = _shifter_proposal(tmp_path, monkeypatch, {
+        "lab": "shift", "applies_to": ["shifter.dig"], "categories": {},
+        "official_tests": {}, "reference_dir": None})
+    assert out["ok"] is True and len(calls) == 2
+    assert out["proposals"][0]["rows"] == rows
+    assert out["proposals"][0]["disputed_rows"] == [0, 1]
+    assert out["rejected"] == []
+    assert not any("formula model" in n for n in out["notes"])
+
+
+def test_model_gate_steps_aside_when_the_model_contradicts_the_files_rows(
+        tmp_path, monkeypatch):
+    xml = _SHIFTER_XML.replace("0 5 2 5\n0 1 2 1", "1 5 0 5\n0 1 2 1")
+    out, rows, calls = _shifter_proposal(tmp_path, monkeypatch, {
+        "lab": "shift", "applies_to": ["shifter.dig"],
+        "subcircuits": {"shifter.dig": {"model": "bidirectional_shifter"}},
+        "categories": {}, "official_tests": {}, "reference_dir": None},
+        xml=xml)
+    assert out["ok"] is True and len(calls) == 2
+    assert out["proposals"][0]["rows"] == rows
+    assert out["rejected"] == []
+    assert not any("formula model" in n for n in out["notes"])
 
 
 def test_propose_rows_survives_model_failure_and_garbage():

@@ -99,6 +99,14 @@ opcodes, digit classes or subcircuit roles needs no manifest at all.
   simulation for that file. Layer 1 never uses models: students always
   see their own child's signals.
 
+  A named model also judges the Coverage Coach's proposals for that
+  file, uploaded on its own or inside the CPU tree, as long as the model
+  does not contradict the file's own rows: rows the model agrees with
+  are confirmed without the coach's own self-check, rows it contradicts
+  are rejected with the value the lab computes. Register files and memories
+  (stateful models) are not judged this way; their rows are replayed on the 
+  circuit when the testcase drives the clock.
+
 Shipped formulas:
 
 | Model | Interface | Computes |
@@ -136,9 +144,12 @@ only refers to it by name.
   identify it, written with the testcase's own column names. Values may be
   decimal, `0x…` or `0b…`.
 - A file is green when every category is matched by at least one test
-  row; the Coverage Coach proposes rows for the missing ones. Once every
-  category is matched, *Propose new test rows* stops before asking the
-  model, says the file is complete, and refunds the use.
+  row; the Coverage Coach proposes rows for the missing ones. For the
+  instruction-decode file named by `program_decode.categories_from`
+  (the control unit) one row per category is a complete test, so once
+  every category is matched *Propose new test rows* stops before asking
+  the model, says the file is complete, and refunds the use. Every
+  other file keeps proposing edge cases inside covered categories.
 - Every column in a `when` must exist in that file's testcase header,
   otherwise the manifest stays silent for that file.
 

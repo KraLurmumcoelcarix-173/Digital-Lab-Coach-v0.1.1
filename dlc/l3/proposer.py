@@ -464,7 +464,7 @@ def propose_rows(
                 if m.get("description"):
                     t["category_conventions"] = m["description"]
 
-    complete = _complete_targets(report, targets)
+    complete = _complete_targets(report, targets, m)
     if complete:
         targets = [t for t in targets if t["file"] not in complete]
         if not targets:
@@ -501,6 +501,7 @@ def propose_rows(
     paths = {c.file: c.path for c in report.circuits if c.path}
     valid, rejected, notes = _category_gate(valid, rejected, notes, targets, m)
     valid, rejected, notes = _replay_gate(valid, rejected, notes, targets, paths)
+    valid, rejected, notes = _model_gate(valid, rejected, notes, targets, m, paths)
     valid, rejected, notes = _reference_gate(valid, rejected, notes, targets)
     valid, rejected, notes = _selfcheck_gate(
         valid, rejected, notes, targets, call, used_model,
@@ -515,32 +516,131 @@ def propose_rows(
             "model": used_model, "error": None, "notes": notes}
 
 
-def _complete_targets(report: TreeCoverageReport,
-                      targets: list[dict]) -> dict[str, str]:
-    """Files whose lab categories are all exercised already: nothing for
-    the coach to propose there. {file: note}."""
+def _complete_targets(report: TreeCoverageReport, targets: list[dict],
+                      manifest: dict | None) -> dict[str, str]:
+    decode_file = ((manifest or {}).get("program_decode") or {}).get(
+        "categories_from")
     by_file = {c.file: c for c in report.circuits}
     out: dict[str, str] = {}
     for t in targets:
         cov = by_file.get(t["file"])
-        row_cats = cov is not None and cov.categories_total > 0
-        prog_cats = "program_categories_missing" in t
-        if not (row_cats or prog_cats):
-            continue
-        if row_cats and cov.categories_missing:
-            continue
-        if prog_cats and t["program_categories_missing"]:
-            continue
-        if row_cats:
-            what = (f"all {cov.categories_total} instruction categories "
-                    f"are already exercised by your rows")
-        else:
+        if (decode_file and t["file"] == decode_file and cov is not None
+                and cov.categories_total > 0 and not cov.categories_missing):
+            out[t["file"]] = (
+                f"{t['file']}: all {cov.categories_total} instruction "
+                f"categories are already exercised by your rows — the coach "
+                f"has nothing to add.")
+        elif ("program_categories_missing" in t
+                and not t["program_categories_missing"]):
             n = len(t.get("program_categories_present") or [])
-            what = (f"the program already executes all {n} instruction "
-                    f"categories")
-        out[t["file"]] = (f"{t['file']}: {what} — the coach has nothing "
-                          f"to add.")
+            out[t["file"]] = (
+                f"{t['file']}: the program already executes all {n} "
+                f"instruction categories — the coach has nothing to add.")
     return out
+
+
+def _row_from_raw(raw: str):
+    from dlc.testing.spec import TestRow
+    cells = raw.split("#", 1)[0].split()
+    return TestRow(raw=raw, values=[_tokenize(c) for c in cells])
+
+
+def _model_for_file(file: str, path: str, manifest: dict | None):
+    from dlc.sim import models as fm
+    cfg = ((manifest or {}).get("subcircuits") or {}).get(file) or {}
+    wanted = cfg.get("model")
+    if not wanted or wanted == "simulate":
+        return None
+    model = fm.BY_NAME.get(wanted)
+    if model is None or model.stateful:
+        return None
+    try:
+        circuit = parse_dig_file(path)
+    except Exception:
+        return None
+    if model not in fm.candidates(circuit):
+        return None
+    ok, detail = fm.validate(model, circuit)
+    if not ok and detail != "no testcase":
+        return None
+    return model, circuit
+
+
+def _model_verdict(model, circuit, headers: list[str], raw: str):
+    from dlc.sim.simulator import inputs_for_row
+    row = _row_from_raw(raw)
+    ev = model.evaluate(inputs_for_row(circuit, headers, row), None)
+    if ev is None:
+        return None
+    outs, _next = ev
+    cells = raw.split("#", 1)[0].split()
+    idx = {h: i for i, h in enumerate(headers)}
+    judged = False
+    diffs: list[str] = []
+    for name, width in model.outputs:
+        i = idx.get(name)
+        if i is None or i >= len(cells) or name not in outs:
+            continue
+        want = _row_cell_value(cells[i])
+        if want is None:
+            continue
+        judged = True
+        m = (1 << width) - 1
+        if (want & m) != (outs[name] & m):
+            diffs.append(f"{name}=0x{outs[name] & m:X}")
+    if not judged:
+        return None
+    return (not diffs), ", ".join(diffs)
+
+
+def _model_gate(valid, rejected, notes, targets, manifest, paths):
+    by_file = {t["file"]: t for t in targets}
+    kept: list[dict] = []
+    confirmed_total = 0
+    names: set[str] = set()
+    for g in valid:
+        t = by_file.get(g["file"])
+        path = paths.get(g["file"])
+        if (t is None or path is None or t.get("has_clock")
+                or g.get("program_words")):
+            kept.append(g)
+            continue
+        found = _model_for_file(g["file"], path, manifest)
+        if found is None:
+            kept.append(g)
+            continue
+        model, circuit = found
+        good: list[str] = []
+        confirmed: list[str] = []
+        for raw in g["rows"]:
+            verdict = _model_verdict(model, circuit, t["headers"], raw)
+            if verdict is None:
+                good.append(raw)
+                continue
+            agrees, detail = verdict
+            if agrees:
+                good.append(raw)
+                confirmed.append(raw)
+                continue
+            rejected.append({
+                "file": g["file"], "spec_name": g["spec_name"],
+                "rows": [raw], "why": g.get("why", ""),
+                "reason": (f"wrong expected value — the lab's formula model "
+                           f"({model.name}) computes {detail} for these "
+                           f"inputs"),
+            })
+        if good:
+            entry = {**g, "rows": good}
+            if confirmed:
+                entry["model_confirmed"] = confirmed
+                names.add(model.name)
+            kept.append(entry)
+        confirmed_total += len(confirmed)
+    if confirmed_total:
+        notes.append(
+            f"{confirmed_total} row(s) confirmed by the lab's formula model "
+            f"({', '.join(sorted(names))}) — no self-check needed for them.")
+    return kept, rejected, notes
 
 
 def _classify_reason(reason: str) -> str:
@@ -556,7 +656,7 @@ def _classify_reason(reason: str) -> str:
         return "undefined_op"
     if ("wrong expected value" in r or "lab reference" in r
             or "self-check" in r or "machine state" in r
-            or "follows a dropped row" in r):
+            or "formula model" in r or "follows a dropped row" in r):
         return "wrong_expectation"
     return "format"
 
@@ -801,7 +901,10 @@ def _selfcheck_gate(valid, rejected, notes, targets, call, used_model):
         out_cols = [o["label"] for o in t["outputs"]]
         if not out_cols:
             continue
+        confirmed = set(g.get("model_confirmed") or [])
         for ri, raw in enumerate(g["rows"]):
+            if raw in confirmed:
+                continue
             cells = raw.split("#", 1)[0].split()
             masked = [
                 "?" if h in out_cols else (cells[i] if i < len(cells) else "?")
