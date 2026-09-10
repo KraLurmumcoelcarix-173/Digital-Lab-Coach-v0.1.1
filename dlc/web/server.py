@@ -1020,14 +1020,25 @@ def _row_replay(path: str, spec_index: int) -> dict:
     return entry
 
 
+def _view_path(target: dict) -> tuple[str, str | None]:
+    from dlc.testing.inject import prepare_injected_run
+    name = target.get("name") or os.path.basename(target["path"])
+    temp, _notes = prepare_injected_run(target["path"], name)
+    return (temp or target["path"]), temp
+
+
 @app.post("/api/simulate")
 def simulate_row(req: SimulateRequest) -> dict:
+    from dlc.testing.inject import cleanup_injected
     target = _resolve_target(req.session_id, req.filename)
+    view_path, inj_temp = _view_path(target)
     try:
-        entry = _row_replay(target["path"], req.spec_index)
+        entry = _row_replay(view_path, req.spec_index)
     except Exception as exc:
         return {"ok": False, "warning": f"Could not parse circuit: {exc}",
                 "net_values": {}, "outputs": [], "unresolved_nets": []}
+    finally:
+        cleanup_injected(inj_temp)
     circuit, netlist = entry["circuit"], entry["netlist"]
     specs, spec = entry["specs"], entry["spec"]
     if not specs or spec is None:
@@ -1104,13 +1115,17 @@ def _child_at(circuit, comp_idx: int):
 
 @app.post("/api/subcircuit")
 def subcircuit_row(req: SubcircuitRequest) -> dict:
+    from dlc.testing.inject import cleanup_injected
     target = _resolve_target(req.session_id, req.filename)
+    view_path, inj_temp = _view_path(target)
     try:
-        circuit = parse_dig_file(target["path"])
+        circuit = parse_dig_file(view_path)
         netlist = build_netlist(circuit)
         graph = build_signal_graph(circuit, netlist)
     except Exception as exc:
         return {"ok": False, "warning": f"Could not parse circuit: {exc}"}
+    finally:
+        cleanup_injected(inj_temp)
 
     if not req.path:
         return {"ok": False, "warning": "No subcircuit path given."}

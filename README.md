@@ -17,7 +17,8 @@ education and explore new means of interactive hardware design debugging.
 
 ## Status
 
-v0.1.1 (2026/8/24) — Opus option for Mode B.
+v0.1.2 (2026/9/10) — Mode A supports higher fixes with optimized latency and cost, signal flow walkthrough feature added in Layer 2.
+v0.1.1 (2026/8/24) — Supports 311 Digital transistor lab.
 v0.1.0 (2026/8/23) — first packaged release.
 
 ## Table of contents
@@ -62,8 +63,6 @@ v0.1.0 (2026/8/23) — first packaged release.
    macOS/Linux. The first run installs its own toolchain and takes a
    few minutes; your browser then opens the app at
    `http://127.0.0.1:8765`.
-
-![START_HERE first run](docs/screenshots/start_here.png)
 
 3. First run asks for your `Digital.jar` location — the same jar you run
    labs with (see the Digital.jar section below if you don't have one).
@@ -158,7 +157,7 @@ whole-server daily circuit breaker (`DLC_GLOBAL_DAILY_CALLS`, default
 | Layer | Counts | Default | Change it in |
 |---|---|---|---|
 | Per-student daily caps | runs/day, on the student's machine | Mode A 1, Mode B 2 | `CAPS` at the top of [`dlc/l3/limits.py`](dlc/l3/limits.py); the caps only count when the student app runs with `DLC_ENFORCE_LIMITS=1` (the release launchers set it; a developer checkout runs uncapped) |
-| Per-machine backstop | LLM calls/day per machine, server-side | modeA 8, modeB 10, grade 2, explain 2 | `CALL_BUDGETS` at the top of [`proxy/dlc_proxy.py`](proxy/dlc_proxy.py) |
+| Per-machine backstop | LLM calls/day per machine, server-side | modeA 4, modeB 4, grade 2, explain 2 | `CALL_BUDGETS` at the top of [`proxy/dlc_proxy.py`](proxy/dlc_proxy.py) |
 | Whole-server circuit breaker | calls/day and estimated $/day, whole class | 600 calls, $20 | env `DLC_GLOBAL_DAILY_CALLS`, `DLC_GLOBAL_DAILY_USD` on the proxy |
 
 A Mode A run only counts against the daily cap when it delivers a
