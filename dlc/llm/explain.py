@@ -116,7 +116,40 @@ def _subcircuit_compact(s: dict) -> dict:
         out["child_inputs"] = [_io_compact(c) for c in s.get("child_inputs")]
     if s.get("child_outputs") is not None:
         out["child_outputs"] = [_io_compact(c) for c in s.get("child_outputs")]
+    if s.get("role"):
+        out["role"] = s["role"]
     return out
+
+
+def attach_subcircuit_roles(facts: dict, circuit, manifest: dict | None) -> list[dict]:
+    from dlc.sim.models import role_for
+    children = {}
+    for ref in getattr(circuit, "subcircuits", []) or []:
+        if ref.child_circuit is not None and ref.reference not in children:
+            children[ref.reference] = ref.child_circuit
+    roles: list[dict] = []
+    seen: set[str] = set()
+    for s in facts.get("subcircuits", []) or []:
+        ref = s.get("reference")
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        child = children.get(ref)
+        role = role_for(child, manifest, ref) if child is not None else None
+        if role:
+            s["role"] = role
+            roles.append({"reference": ref, "role": role})
+    return roles
+
+
+def format_example_row(example_row: dict | None) -> str:
+    if not example_row:
+        return "(none)"
+    cols = example_row.get("columns") or []
+    cells = str(example_row.get("raw", "")).split("#", 1)[0].split()
+    pairs = " ".join(f"{c}={v}" for c, v in zip(cols, cells))
+    return (f"row {example_row.get('row_index')} of testcase "
+            f"'{example_row.get('spec_name', '')}': {pairs}")
 
 
 _SWITCH_LEVEL_ELEMENTS = ("NFET", "PFET", "PullUp", "PullDown")
@@ -237,6 +270,7 @@ def explain_circuit(
     *,
     api_key: str | None = None,
     model: str | None = None,
+    example_row: dict | None = None,
 ) -> dict:
     gate = _gate_text_for_issues(issues)
     if gate is None:
@@ -252,6 +286,7 @@ def explain_circuit(
     prompt = template.format(
         circuit_facts_json=json.dumps(compact, indent=2),
         test_results_summary=test_summary or "(tests not yet run)",
+        example_row=format_example_row(example_row),
         student_goal_or_none=(student_goal.strip() if student_goal else "(none)"),
         lectures_list=SYLLABUS_311,
     )

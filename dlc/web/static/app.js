@@ -200,6 +200,24 @@ const CY_STYLE = [
       "background-color": "#fee2e2", "label": "data(label)",
     },
   },
+  {
+    selector: "node.walk-done",
+    style: { "border-color": "#c4b5fd", "border-width": 3 },
+  },
+  {
+    selector: "node.walk-focus",
+    style: {
+      "border-color": "#a855f7", "border-width": 5,
+      "background-color": "#f5d0fe", "background-opacity": 0.95,
+    },
+  },
+  {
+    selector: "edge.walk-edge",
+    style: {
+      "line-color": "#d946ef", "target-arrow-color": "#d946ef",
+      "width": 5, "opacity": 1,
+    },
+  },
   /*# ───────────────────────────────────────────────────────────────────
   *#  Wire hover focus
   *# ──────────────────────────────────────────────────────────────────#*/
@@ -2457,13 +2475,378 @@ l2LlmBtn.addEventListener("click", async () => {
   l2LlmStatus.textContent = "Done.";
   l2LlmStatus.className = "l2-llm-status done";
   l2LlmOutput.classList.remove("empty");
-  l2LlmOutput.innerHTML = renderL2ParagraphCards(payload.text || "(empty response)");
+  l2Extras = {
+    filename: file.filename,
+    exampleRow: payload.example_row || null,
+    roles: payload.subcircuit_roles || [],
+    walk: null, walkPending: !!payload.example_row, walkError: null,
+  };
+  l2LlmOutput.innerHTML = renderL2ParagraphCards(payload.text || "(empty response)", l2Extras);
   wireL2CardEvents();
+  // The walkthrough is deterministic (no model call): fetch it alongside
+  // the grade so the flow card fills in without waiting for anything.
+  if (l2Extras.exampleRow) l2FetchWalkthrough(file.filename, l2Extras.exampleRow);
 
   // Grade the summary just shown, keeping the same abort scope so Stop also
   // cancels grading; if there's nothing to grade, close the scope here.
   if (payload.text) gradeCurrentSummary(payload.text);
   else l2EndAbortable();
+});
+
+  /*# ───────────────────────────────────────────────────────────────────
+  *#  L2 signal-flow walkthrough: expression in the flow card + a player
+  *#  that walks the example row through the Dashboard graph
+  *# ──────────────────────────────────────────────────────────────────#*/
+let l2Extras = { filename: null, exampleRow: null, roles: [], walk: null,
+                 walkPending: false, walkError: null };
+let l2WalkState = null;
+
+async function l2FetchWalkthrough(filename, exampleRow) {
+  let body = null;
+  try {
+    const res = await fetch("/api/l2/walkthrough", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId, filename,
+        spec_index: exampleRow.spec_index, row_index: exampleRow.row_index,
+      }),
+    });
+    body = res.ok ? await res.json() : { ok: false, warning: `Server error ${res.status}` };
+  } catch (err) {
+    body = { ok: false, warning: `Network error: ${err}` };
+  }
+  if (l2Extras.filename !== filename) return;      // a newer summary replaced this one
+  l2Extras.walkPending = false;
+  if (body && body.ok) l2Extras.walk = body;
+  else l2Extras.walkError = (body && body.warning) || "walkthrough unavailable";
+  l2RefreshFlowCard();
+}
+
+function l2RefreshFlowCard() {
+  const body = l2LlmOutput.querySelector(".l2-card-flow .l2-card-body");
+  if (!body) return;
+  body.innerHTML = l2FlowBodyHtml(l2Extras.flowText || "", l2Extras);
+}
+
+// Sentences of a paragraph; filenames such as alu.dig keep their dot.
+function l2Sentences(text) {
+  const guarded = text.replace(/\.dig\b/g, "․dig");
+  const parts = guarded.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) || [guarded];
+  return parts.map((s) => s.replace(/․dig/g, ".dig").trim()).filter(Boolean);
+}
+
+function l2SubsBodyHtml(text, roles) {
+  if (!roles || !roles.length) return escapeHtml(text);
+  const sentences = l2Sentences(text);
+  const used = new Set();
+  const items = roles.map((r) => {
+    const ref = String(r.reference || "");
+    const stem = ref.replace(/\.dig$/i, "");
+    const mine = [];
+    sentences.forEach((s, i) => {
+      if (used.has(i)) return;
+      const low = s.toLowerCase();
+      if (low.includes(ref.toLowerCase()) || (stem && low.includes(stem.toLowerCase() + "."))) {
+        used.add(i); mine.push(s);
+      }
+    });
+    return `<li><span class="l2-sub-name">${escapeHtml(ref)}</span> ` +
+      `<span class="l2-sub-role">${escapeHtml(r.role || "")}</span>` +
+      (mine.length ? `<div class="l2-sub-model">${escapeHtml(mine.join(" "))}</div>` : "") +
+      `</li>`;
+  });
+  const rest = sentences.filter((_, i) => !used.has(i));
+  return `<div class="l2-rich"><ol class="l2-sub-list">${items.join("")}</ol>` +
+    (rest.length ? `<div class="l2-sub-rest">${escapeHtml(rest.join(" "))}</div>` : "") +
+    `</div>`;
+}
+
+function l2FlowBodyHtml(text, extras) {
+  let html = `<div class="l2-flow-prose">${escapeHtml(text)}</div>`;
+  const ex = extras && extras.exampleRow;
+  if (!ex) {
+    return html + `<div class="l2-rich"><div class="l2-walk-hint">No test row to replay for this file.</div></div>`;
+  }
+  const walk = extras.walk;
+  let block = "";
+  if (walk) {
+    const lines = (walk.outputs || []).map((o) => {
+      const mark = o.ok === true ? `<span class="ok">✓</span>` :
+                   o.ok === false ? `<span class="bad">✗ expected ${escapeHtml(o.expected || "?")}</span>` : "";
+      return `<div class="l2-expr-line">${escapeHtml(o.expression)} ${mark}</div>`;
+    }).join("");
+    const notes = (walk.notes || []).length
+      ? `<div class="l2-walk-note">${escapeHtml(walk.notes.join(" "))}</div>` : "";
+    block =
+      `<div class="l2-flow-expr"><div class="l2-expr-title">Row ${walk.row_index} as an expression` +
+      ` <span class="l2-expr-raw">${escapeHtml(walk.raw || "")}</span></div>${lines}${notes}</div>`;
+    if (walk.valid === false) {
+      const bad = (walk.outputs || []).filter((o) => o.ok === false)
+        .map((o) => `${o.label} gives ${o.found == null ? "?" : o.found} instead of ${o.expected}`).join("; ");
+      block += `<div class="l2-walk-invalid">Flow example invalid: on this row your circuit does not produce ` +
+        `the expected outputs (${escapeHtml(bad)}). Run the tests on the Dashboard and use Mode A on the L3 Coach tab first.</div>`;
+    } else if (!(walk.steps || []).length) {
+      block += `<div class="l2-walk-hint">Nothing to walk through: no component lies between the inputs and the outputs on this row.</div>`;
+    } else {
+      block += `<div class="l2-walk-row"><button type="button" class="l2-walk-btn" data-l2-walk="1">` +
+        `&#9654; Play the walkthrough on the circuit</button>` +
+        `<span class="l2-walk-hint">${walk.waves || 1} wave${walk.waves === 1 ? "" : "s"} of components, one Next click each, on the Dashboard graph</span></div>`;
+    }
+  } else if (extras.walkPending) {
+    block = `<div class="l2-walk-hint">Preparing the walkthrough of row ${ex.row_index}<span class="llm-dots" aria-hidden="true"><i></i><i></i><i></i></span></div>`;
+  } else {
+    block = `<div class="l2-walk-hint">Walkthrough unavailable: ${escapeHtml(extras.walkError || "")}</div>`;
+  }
+  return html + `<div class="l2-rich">${block}</div>`;
+}
+
+l2LlmOutput.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-l2-walk]");
+  if (!btn) return;
+  e.stopPropagation();
+  l2PlayWalkthrough();
+});
+
+function l2WalkShield(on) {
+  let el = document.getElementById("l2-walk-shield");
+  if (on) {
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "l2-walk-shield";
+      document.body.appendChild(el);
+    }
+    el.classList.remove("hidden");
+  } else if (el) {
+    el.classList.add("hidden");
+  }
+}
+
+function l2WalkBoard() {
+  let el = document.getElementById("l2-walk-board");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "l2-walk-board";
+    el.innerHTML =
+      `<div class="l2-walk-head"><span class="l2-walk-title">Signal-flow walkthrough</span>` +
+      `<span class="l2-walk-where"></span></div>` +
+      `<div class="l2-walk-text"></div>` +
+      `<div class="l2-walk-bar"><i></i></div>` +
+      `<div class="l2-walk-ctl">` +
+      `<button class="l2-walk-next" title="light the next wave (→ or Enter)">Next &#9654;</button>` +
+      `<button class="l2-walk-replay hidden" title="start over">&#8635; Replay</button>` +
+      `<button class="l2-walk-finish hidden" title="back to the summary">Finish</button>` +
+      `<span class="l2-walk-count"></span></div>`;
+    el.querySelector(".l2-walk-next").onclick = l2WalkNext;
+    el.querySelector(".l2-walk-replay").onclick = () => l2WalkStart();
+    el.querySelector(".l2-walk-finish").onclick = l2WalkFinish;
+    document.body.appendChild(el);
+  }
+  el.classList.remove("hidden");
+  return el;
+}
+
+function l2WalkPointer() {
+  const pane = document.getElementById("graph-pane");
+  if (!pane) return null;
+  let el = document.getElementById("l2-walk-pointer");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "l2-walk-pointer";
+    el.textContent = "➤";
+    pane.appendChild(el);
+  }
+  el.classList.remove("hidden");
+  return el;
+}
+
+function l2WalkPlacePointer() {
+  const st = l2WalkState;
+  if (!st || !cy) return;
+  const wave = st.waves[st.k - 1];
+  const step = wave && wave[0];
+  const n = step ? cy.getElementById(String(step.component_index)) : null;
+  const el = document.getElementById("l2-walk-pointer");
+  const box = document.getElementById("cy");
+  if (!el || !box || !n || n.empty()) return;
+  const p = n.renderedPosition();
+  el.style.left = `${box.offsetLeft + p.x + 6}px`;
+  el.style.top = `${box.offsetTop + p.y + 6}px`;
+}
+
+function l2LightEdge(e, nv) {
+  const info = nv[String(e.data("net_id"))];
+  e.removeClass("sig-dim sig-none sig-hi sig-lo sig-bus");
+  if (!info) { e.addClass("sig-none"); return; }
+  const bits = info.bits || 1;
+  if (bits <= 1) e.addClass(info.value ? "sig-hi" : "sig-lo");
+  else {
+    e.addClass("sig-bus");
+    e.data("sigLabel", bits <= 8 && info.value != null ? String(info.value) : "0x" + (info.hex || "0"));
+  }
+}
+
+function l2WalkLightOutputs(st, lit) {
+  const nv = st.walk.net_values || {};
+  const found = {};
+  (st.walk.outputs || []).forEach((o) => { found[o.label] = o.found; });
+  cy.nodes(".sig-dim").forEach((n) => {
+    if (n.data("element_name") !== "Out") return;
+    const inc = n.incomers("edge");
+    if (inc.empty() || inc.sources().some((s) => s.hasClass("sig-dim"))) return;
+    n.removeClass("sig-dim").addClass("walk-focus");
+    lit.merge(n);
+    inc.forEach((e) => { l2LightEdge(e, nv); e.addClass("walk-edge"); });
+    const v = found[n.data("comp_label")];
+    if (v != null) {
+      if (n.data("baseLabel") == null) n.data("baseLabel", n.data("label"));
+      n.data("label", n.data("baseLabel") + "\n= " + v);
+    }
+  });
+}
+
+function l2WalkKeepVisible(lit) {
+  if (lit.empty()) return;
+  const bb = lit.renderedBoundingBox();
+  const w = cy.width(), h = cy.height(), m = 12;
+  if (bb.x1 >= m && bb.y1 >= m && bb.x2 <= w - m && bb.y2 <= h - m) return;
+  try { cy.animate({ center: { eles: lit }, duration: 350 }); } catch {}
+}
+
+async function l2PlayWalkthrough() {
+  const walk = l2Extras.walk;
+  const file = loaded.length > 0 ? loaded[currentIdx] : null;
+  if (!walk || walk.valid === false || !(walk.steps || []).length ||
+      !file || file.filename !== l2Extras.filename) return;
+  showTab("main");
+  if (!cy) return;
+  logEvent("l2_walkthrough_played", { filename: file.filename, waves: walk.waves });
+  l2WalkStart();
+}
+
+function l2WalkStart() {
+  const walk = l2Extras.walk;
+  if (!walk || !cy) return;
+  stopClockTick();
+  clockDone = false;
+  hideClockHud();
+  sigActive = null;
+  clearSignalFlow(cy);
+  const waves = [];
+  walk.steps.forEach((s) => {
+    const w = Math.max(1, s.wave || 1);
+    while (waves.length < w) waves.push([]);
+    waves[w - 1].push(s);
+  });
+  l2WalkState = { walk, waves, k: 0 };
+  cy.batch(() => {
+    cy.elements().addClass("sig-dim");
+    cy.nodes().removeClass("walk-focus walk-done");
+    cy.edges().removeClass("walk-edge");
+    (walk.sources || []).forEach((idx) => {
+      const n = cy.getElementById(String(idx));
+      if (n && n.nonempty()) n.removeClass("sig-dim");
+    });
+  });
+  try { cy.fit(undefined, 60); } catch {}
+  l2WalkShield(true);
+  const board = l2WalkBoard();
+  board.querySelector(".l2-walk-where").textContent =
+    `row ${walk.row_index} of '${walk.spec_name || ""}' · ${waves.length} wave${waves.length === 1 ? "" : "s"}`;
+  const ins = (walk.inputs || []).map((i) => `${i.label} = ${i.text}`).join(", ");
+  board.querySelector(".l2-walk-text").innerHTML =
+    `<b>Ready.</b> The inputs and the registers' current values are lit. ` +
+    `Each <b>Next</b> lets the signal reach the next group of components; ` +
+    `a component waits until all of its inputs have arrived.` +
+    (ins ? `<div class="l2-walk-final">Inputs: ${escapeHtml(ins)}.</div>` : "");
+  board.querySelector(".l2-walk-bar > i").style.width = "0%";
+  board.querySelector(".l2-walk-count").textContent = `0 / ${waves.length}`;
+  board.querySelector(".l2-walk-next").classList.remove("hidden");
+  board.querySelector(".l2-walk-next").disabled = false;
+  board.querySelector(".l2-walk-replay").classList.add("hidden");
+  board.querySelector(".l2-walk-finish").classList.add("hidden");
+  const ptr = document.getElementById("l2-walk-pointer");
+  if (ptr) ptr.classList.add("hidden");
+  cy.off("pan zoom resize", l2WalkPlacePointer);
+  cy.on("pan zoom resize", l2WalkPlacePointer);
+}
+
+function l2WalkNext() {
+  const st = l2WalkState;
+  if (!st || !cy || st.k >= st.waves.length) return;
+  const nv = st.walk.net_values || {};
+  const svgs = st.walk.node_svgs || {};
+  const wave = st.waves[st.k];
+  st.k += 1;
+  const lit = cy.collection();
+  cy.batch(() => {
+    cy.nodes(".walk-focus").removeClass("walk-focus").addClass("walk-done");
+    cy.edges(".walk-edge").removeClass("walk-edge");
+    wave.forEach((s) => {
+      const n = cy.getElementById(String(s.component_index));
+      if (!n || n.empty()) return;
+      n.removeClass("sig-dim").addClass("walk-focus");
+      lit.merge(n);
+      const nets = new Set((s.inputs || []).map((e) => e.net_id));
+      n.incomers("edge").forEach((e) => {
+        if (!nets.has(e.data("net_id"))) return;
+        l2LightEdge(e, nv);
+        e.addClass("walk-edge");
+        e.source().removeClass("sig-dim");
+      });
+      const svg = svgs[String(s.component_index)];
+      if (svg) {
+        if (n.data("baseShape") == null) n.data("baseShape", n.data("shape_svg"));
+        n.data("shape_svg", svg);
+      }
+    });
+    l2WalkLightOutputs(st, lit);
+  });
+  const board = l2WalkBoard();
+  const last = st.k >= st.waves.length;
+  board.querySelector(".l2-walk-text").innerHTML =
+    `<b>Wave ${st.k}.</b><ul class="l2-walk-list">` +
+    wave.map((s) => `<li>${escapeHtml(s.text)}</li>`).join("") + `</ul>` +
+    (last ? `<div class="l2-walk-final">Outputs: ${escapeHtml((st.walk.outputs || []).map((o) =>
+        `${o.label} = ${o.found == null ? "?" : o.found}`).join(", "))}. Done: ` +
+        `Finish returns to the summary, Replay starts over.</div>` : "");
+  board.querySelector(".l2-walk-count").textContent = `${st.k} / ${st.waves.length}`;
+  board.querySelector(".l2-walk-bar > i").style.width = `${Math.round(100 * st.k / st.waves.length)}%`;
+  if (last) {
+    board.querySelector(".l2-walk-next").classList.add("hidden");
+    board.querySelector(".l2-walk-replay").classList.remove("hidden");
+    board.querySelector(".l2-walk-finish").classList.remove("hidden");
+  }
+  if (lit.nonempty()) {
+    l2WalkKeepVisible(lit);
+    l2WalkPointer();
+    setTimeout(l2WalkPlacePointer, 380);
+  }
+}
+
+function l2WalkFinish() {
+  const had = !!l2WalkState;
+  l2WalkState = null;
+  if (cy) {
+    cy.off("pan zoom resize", l2WalkPlacePointer);
+    cy.nodes().removeClass("walk-focus walk-done");
+    cy.edges().removeClass("walk-edge");
+    clearSignalFlow(cy);
+  }
+  l2WalkShield(false);
+  const board = document.getElementById("l2-walk-board");
+  if (board) board.classList.add("hidden");
+  const ptr = document.getElementById("l2-walk-pointer");
+  if (ptr) ptr.classList.add("hidden");
+  if (had) showTab("l2");
+}
+
+window.addEventListener("keydown", (e) => {
+  if (!l2WalkState) return;
+  if (e.key === "ArrowRight" || e.key === "Enter") {
+    if (l2WalkState.k < l2WalkState.waves.length) l2WalkNext();
+    e.preventDefault();
+  }
 });
 
   /*# ───────────────────────────────────────────────────────────────────
@@ -2677,23 +3060,31 @@ function _splitL2Paragraphs(text) {
   return cleaned;
 }
 
-function renderL2ParagraphCards(rawText) {
+function renderL2ParagraphCards(rawText, extras) {
   const paras = _splitL2Paragraphs(rawText);
   if (paras.length === 0) {
     return `<div class="muted">(empty response)</div>`;
   }
+  if (extras) extras.flowText = paras[2] || "";
   const cards = L2_CARD_TYPES.map((type, idx) => {
     const body = paras[idx] || "";
     const empty = body.length === 0;
+    let inner;
+    if (empty) inner = `<span class="muted">(no content for this section)</span>`;
+    else if (type.key === "subs" && extras) inner = l2SubsBodyHtml(body, extras.roles);
+    else if (type.key === "flow" && extras) inner = l2FlowBodyHtml(body, extras);
+    else inner = escapeHtml(body);
+    const play = (type.key === "flow" && extras && extras.exampleRow)
+      ? `<span class="l2-card-play" title="open to play the walkthrough">&#9654;</span>` : "";
     return `
       <div class="l2-card l2-card-${type.key} ${empty ? "l2-card-empty" : ""}" data-card-idx="${idx}">
         <div class="l2-card-head" role="button" tabindex="0">
           <span class="l2-card-num">${idx + 1}</span>
           <span class="l2-card-name">${type.name}</span>
-          <span class="l2-card-hint">${type.hint}</span>
+          <span class="l2-card-hint">${type.hint}</span>${play}
           <span class="l2-card-toggle">+</span>
         </div>
-        <div class="l2-card-body">${empty ? `<span class="muted">(no content for this section)</span>` : escapeHtml(body)}</div>
+        <div class="l2-card-body">${inner}</div>
       </div>
     `;
   }).join("");

@@ -27,7 +27,7 @@
 | # | Name | Status |
 |---|---|:-:|
 | F11 | LLM client wrapper (SDK, prompt versioning, cost tracking etc.) | Done |
-| F12 | Conceptual explanation generator | Done |
+| F12 | Conceptual explanation generator | Done. The six-card summary now traces a server-chosen example row (`[EXAMPLE ROW]` in the prompt), lists each subcircuit with the lab's one-line role from the manifest or the formula model, and the *Signal flow example* card carries a deterministic expression per output plus a **walkthrough player** (`/api/l2/walkthrough`, no model call) that steps the row through the Dashboard graph one component at a time |
 | F13 | Prompt-leakage guard | Done |
 
 ## Layer 3 LLM strategic debugging
@@ -36,7 +36,7 @@
 |---|---|:-:|
 | F14 | Failed-test interpreter | **L3 Mode A** (debug, when tests fail): hypothesis cards + animated wrong-signal-flow. Data side done (per-row runner: failing rows + expected-vs-found; **plus the `dlc/sim` value evaluator + `/api/simulate` now compute and drive the wrong-signal-flow**); LLM side Done (`/api/llm/debug`) | Done |
 | F15 | Test-writing coach | **L3 Mode B** (coverage): test-coverage analysis -> non-redundant new tests; gated on L1 clean + all tests pass; ROM/RISC-V -> more program + instruction-memory hints. Case 3.B select-coverage gate: an input-driven mux whose exercised select values fall below a 31/32 share blocks proposing (deterministic, free) — the student writes the op rows first, so the coach never guesses semantics the tests don't define; a 32-way mux missing one address stays coached, not blocked. Done | Done |
-| F16 | Signal-flow narrator | The failing-row animation. Its Layer-1 signal-flow-on-click substrate is now **Done** (`/api/simulate` returns per-net values + expected-vs-found outputs + node reactions, which the row-click renderer animates; `/api/subcircuit` drives nested flow). The v3 field names `signal_path_components`/`animation_script` were never built; `animation_script` becomes an L3-agent output. LLM narration layer Done | Done |
+| F16 | Signal-flow narrator | The failing-row animation. Its Layer-1 signal-flow-on-click substrate is now **Done** (`/api/simulate` returns per-net values + expected-vs-found outputs + node reactions, which the row-click renderer animates; `/api/subcircuit` drives nested flow). The v3 field names `signal_path_components`/`animation_script` were never built; `animation_script` becomes an L3-agent output. LLM narration layer Done. The Layer 2 walkthrough (`dlc/sim/walkthrough.py`) is the deterministic narrator for a passing row: active path from the inputs to each output, one sentence per component with the real values, an expression per output | Done |
 
 ## Research infrastructure
 

@@ -34,7 +34,7 @@ from pydantic import BaseModel
 
 from dlc.facts.extractor import extract_facts
 from dlc.llm import client as llm_client
-from dlc.llm.explain import explain_circuit
+from dlc.llm.explain import attach_subcircuit_roles, explain_circuit
 from dlc.llm.grade import grade_summary
 
 from dlc.analyzer import check_all_l1_deep
@@ -1440,13 +1440,109 @@ def llm_explain(req: LlmExplainRequest) -> dict:
     if len(student_goal) == 0:
         student_goal = None
 
-    return explain_circuit(
+    manifest = _lab_manifest(circuit, req.filename)
+    roles = attach_subcircuit_roles(facts_dict, circuit, manifest)
+    example_row = _example_row(circuit)
+    out = explain_circuit(
         facts=facts_dict,
         issues=issues_payload,
         test_summary=req.test_summary,
         student_goal=student_goal,
         model=req.model,
+        example_row=example_row,
     )
+    out["example_row"] = example_row
+    out["subcircuit_roles"] = roles
+    return out
+
+
+def _lab_manifest(circuit, filename: str):
+    try:
+        from dlc.l3.manifest import find_manifest, tree_element_names
+        names = {os.path.basename(filename)}
+        names |= {r.reference for r in circuit.subcircuits if r.reference}
+        return find_manifest(names, element_names=tree_element_names(circuit))
+    except Exception:
+        return None
+
+
+def _example_row(circuit, spec_index: int = 0) -> dict | None:
+    """The row the Layer 2 summary traces and the walkthrough replays."""
+    from dlc.sim.walkthrough import pick_example_row
+    from dlc.testing.spec import match_variables_to_io
+    try:
+        specs = extract_test_specs(circuit)
+        spec = specs[spec_index]
+        bindings = match_variables_to_io(spec.headers, circuit)
+        row = pick_example_row(spec, bindings)
+    except Exception:
+        return None
+    if row is None:
+        return None
+    return {"spec_index": spec_index, "spec_name": spec.name,
+            "row_index": row.line_index, "raw": row.raw,
+            "columns": list(spec.headers)}
+
+
+class WalkthroughRequest(BaseModel):
+    session_id: str
+    filename: str
+    spec_index: int = 0
+    row_index: int = 0
+
+
+@app.post("/api/l2/walkthrough")
+def l2_walkthrough(req: WalkthroughRequest) -> dict:
+    from dlc.sim import models as formula_models
+    from dlc.sim.walkthrough import build_walkthrough
+    from dlc.testing.spec import match_variables_to_io
+
+    target = _resolve_target(req.session_id, req.filename)
+    try:
+        circuit = parse_dig_file(target["path"])
+        netlist = build_netlist(circuit)
+        graph = build_signal_graph(circuit, netlist)
+        specs = extract_test_specs(circuit)
+    except Exception as exc:
+        return {"ok": False, "warning": f"Could not parse circuit: {exc}"}
+    if not specs or not (0 <= req.spec_index < len(specs)):
+        return {"ok": False, "warning": "No such testcase in this circuit."}
+    spec = specs[req.spec_index]
+    row = next((r for r in spec.rows
+                if r.line_index == req.row_index and not r.is_malformed), None)
+    if row is None:
+        return {"ok": False, "warning": "No such row in this testcase."}
+    manifest = _lab_manifest(circuit, req.filename)
+    model_notes: list[str] = []
+    resolver = formula_models.resolver_for(circuit, manifest, model_notes)
+    roles = {}
+    for ref in circuit.subcircuits:
+        if ref.child_circuit is not None and ref.reference not in roles:
+            from dlc.sim.models import role_for
+            r = role_for(ref.child_circuit, manifest, ref.reference)
+            if r:
+                roles[ref.reference] = r
+    try:
+        replay = RowReplay(circuit, netlist, graph, spec, model_resolver=resolver)
+        res = replay.upto(row.line_index)
+        bindings = match_variables_to_io(spec.headers, circuit)
+        walk = build_walkthrough(circuit, netlist, graph, spec, row, res,
+                                 bindings, roles=roles)
+    except Exception as exc:
+        return {"ok": False,
+                "warning": f"Evaluator error: {type(exc).__name__}: {exc}"}
+    if resolver.decided:
+        walk["notes"].append(
+            "values inside " + ", ".join(sorted(resolver.decided))
+            + " come from the lab's formula model of that file.")
+    walk["net_values"] = {
+        str(nid): {"value": val, "bits": res.net_bits.get(nid, 1),
+                   "hex": format(val, "X")}
+        for nid, val in res.net_values.items()
+    }
+    walk["node_svgs"] = _node_reactions(circuit, netlist, res)
+    return {"ok": True, "warning": None, "spec_index": req.spec_index,
+            "spec_name": spec.name, **walk}
 
 
 @app.post("/api/llm/grade")

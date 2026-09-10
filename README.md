@@ -78,11 +78,23 @@ v0.1.0 (2026/8/23) — first packaged release.
 
 ![A verified Mode A fix card](docs/screenshots/mode_a_card.png)
 
+### The Layer 2 summary and its walkthrough
+
+*Summarize circuit* on the L2 Library tab returns six cards. The
+subcircuit card lists every child with the lab's one-line role
+above what the model says about it. The signal-flow card traces 
+one real test row, the same row the tool picks for its own replay, 
+and shows that row as an expression per output. 
+
+Its **Play the walkthrough** button first checks that the circuit really produces the row's expected outputs,
+then switches to the Dashboard, stops any clock tick or signal flow shown there, and walks the row through the circuit as a wavefront: every **Next** click lights the next group of components and the wires that reach them, with a sentence per component; a component waits until all its inputs have arrived; an output port lights
+with its value as soon as the signal reaches it; one clock cycle only, register outputs are the starting values. Nothing else is clickable until the last wave, where **Finish** returns to the summary and **Replay** starts over.
+
 ### Working offline
 
 Everything deterministic — the graph, structural issues, per-row tests,
-signal flow, subcircuit drill-in — works with no internet at all. Only
-the AI coach needs the course-server connection.
+signal flow, subcircuit drill-in, the Layer 2 walkthrough — works with no
+internet at all. Only the AI coach needs the course-server connection.
 
 ### Telemetry Statement
 

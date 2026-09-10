@@ -15,6 +15,33 @@ def test_compact_surfaces_io_bit_width_from_extractor_shape():
     assert compact["outputs"][0] == {"label": "Y", "bits": 8}
 
 
+def test_compact_carries_the_subcircuit_role_when_known():
+    facts = {"subcircuits": [
+        {"reference": "alu.dig", "resolved_path": "/x/alu.dig",
+         "child_inputs": [], "child_outputs": [], "role": "ALU: adds."},
+        {"reference": "other.dig", "resolved_path": "/x/other.dig",
+         "child_inputs": [], "child_outputs": []},
+    ]}
+    subs = _compact_facts(facts)["subcircuits"]
+    assert subs[0]["role"] == "ALU: adds."
+    assert "role" not in subs[1]
+
+
+def test_attach_roles_uses_the_manifest_or_the_model_description():
+    from dlc.llm.explain import attach_subcircuit_roles
+    circuit = parse_dig_file(
+        "data/sample_circuits/tier3_realistic/tier3_calculator.dig")
+    facts = extract_facts(circuit).to_dict()
+    roles = attach_subcircuit_roles(
+        facts, circuit, {"subcircuits": {"bool_unit.dig": {"role": "Picks AND/OR/XOR/NOR."}}})
+    assert roles == [{"reference": "bool_unit.dig", "role": "Picks AND/OR/XOR/NOR."}]
+    assert facts["subcircuits"][0]["role"] == "Picks AND/OR/XOR/NOR."
+    # no manifest and no formula model fitting the child's ports: no role
+    facts2 = extract_facts(circuit).to_dict()
+    assert attach_subcircuit_roles(facts2, circuit, None) == []
+    assert "role" not in facts2["subcircuits"][0]
+
+
 def test_compact_marks_resolved_and_carries_child_interface():
     facts = {"subcircuits": [{
         "reference": "alu.dig", "resolved_path": "/labs/alu.dig",

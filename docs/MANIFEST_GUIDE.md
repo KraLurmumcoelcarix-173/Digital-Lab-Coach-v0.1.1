@@ -89,7 +89,8 @@ opcodes, digit classes or subcircuit roles needs no manifest at all.
 ```
 
 - `role` — one line in your words. Layer 3 quotes it when it debugs the
-  parent.
+  parent, and the Layer 2 summary shows it as the first line of that
+  subcircuit's entry.
 - `model` — the formula DLC may use in place of a passing child while it
   debugs the parent circuit (Mode A only starts once every child passes
   its own tests). Without an entry DLC picks a model by the child's

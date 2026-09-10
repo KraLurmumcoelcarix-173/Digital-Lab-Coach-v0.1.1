@@ -6,7 +6,7 @@ in a calm study session, not during a debugging emergency.
 
 # INPUT BLOCKS
 
-The four blocks below are the ONLY ground truth you have. Treat
+The five blocks below are the ONLY ground truth you have. Treat
 anything outside these blocks as either prior knowledge of standard
 digital logic (acceptable as background) or as not knowable
 (forbidden to assert).
@@ -16,6 +16,9 @@ digital logic (acceptable as background) or as not knowable
 
 [TEST RESULTS]
 {test_results_summary}
+
+[EXAMPLE ROW]
+{example_row}
 
 [STUDENT GOAL]
 {student_goal_or_none}
@@ -147,6 +150,13 @@ P2.3 GIVEN you write a subcircuit sentence,
      "the ALU subcircuit") and state what it computes from its
      inputs to its outputs.
 
+P2.5 GIVEN a subcircuit entry in [CIRCUIT FACTS] carries a "role"
+     string,
+     WHEN you write that subcircuit's sentence,
+     THEN open the sentence with that role, restated in one clause,
+     before naming its inputs and outputs; a role is the lab's own
+     one-line description and outranks your inference.
+
 P2.4 GIVEN a subcircuit entry has resolved=false,
      WHEN you write paragraph 2,
      THEN skip that entry in the per-subcircuit sentences but
@@ -155,7 +165,14 @@ P2.4 GIVEN a subcircuit entry has resolved=false,
 
 ## Paragraph 3 - Signal flow with example data
 
-P3.1 GIVEN [TEST RESULTS] contains one or more row entries,
+P3.0 GIVEN [EXAMPLE ROW] names a row (anything but "(none)"),
+     WHEN you write paragraph 3,
+     THEN trace exactly that row - its input values and its expected
+     output values - and no other row; the student replays the same
+     row on the circuit next to your paragraph.
+
+P3.1 GIVEN [EXAMPLE ROW] is "(none)" and [TEST RESULTS] contains one
+     or more row entries,
      WHEN you write paragraph 3,
      THEN pick exactly one of those rows and use its concrete
      numeric values as your example.
