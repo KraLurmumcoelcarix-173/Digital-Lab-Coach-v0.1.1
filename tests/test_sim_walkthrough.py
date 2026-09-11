@@ -122,3 +122,83 @@ def test_a_long_expression_is_cut_short(monkeypatch):
     walk, _ = _walk(_CALC)
     expr = next(o for o in walk["outputs"] if o["label"] == "Zero")["expression"]
     assert expr.endswith("…") and len(expr) <= len("Zero = ") + 31
+
+
+def _alone(tmp_path, path):
+    """A copy of `path` in an empty directory: its child files stay unresolved."""
+    import shutil
+    dst = tmp_path / path.split("/")[-1]
+    shutil.copy(path, dst)
+    return str(dst)
+
+
+def _walk_assumed(target, row_index):
+    """Walkthrough of `target` with the assumption policy the endpoint uses."""
+    from dlc.sim.walkthrough import assumption_policy
+    c = parse_dig_file(target)
+    nl = build_netlist(c)
+    g = build_signal_graph(c, nl)
+    spec = extract_test_specs(c)[0]
+    bindings = match_variables_to_io(spec.headers, c)
+    row = next(r for r in spec.rows if r.line_index == row_index)
+    policy = assumption_policy(c, nl, spec, row, bindings)
+    res = RowReplay(c, nl, g, spec, assume=policy).upto(row.line_index)
+    return build_walkthrough(c, nl, g, spec, row, res, bindings), res
+
+
+def test_layer1_evaluator_is_untouched_without_a_policy(tmp_path):
+    # the calculator alone: its child is not loaded, so the Op=3 row stays
+    # unknown for Layer 1 exactly as before
+    c = parse_dig_file(_alone(tmp_path, _CALC))
+    nl = build_netlist(c)
+    g = build_signal_graph(c, nl)
+    spec = extract_test_specs(c)[0]
+    res = RowReplay(c, nl, g, spec).upto(6)
+    assert res.output_values.get("Result") is None and res.assumed == {}
+
+
+def test_a_missing_child_is_assumed_from_the_row_and_the_story_goes_on(tmp_path):
+    walk, res = _walk_assumed(_alone(tmp_path, _CALC), 6)   # Op=3 runs through bool_unit.dig
+    assert res.assumed and len(walk["assumptions"]) == 1
+    why = walk["assumptions"][0]
+    assert why.startswith("bool_unit.dig") and "15" in why and "Result" in why
+    result = next(o for o in walk["outputs"] if o["label"] == "Result")
+    assert result["ok"] is True and result["assumed_upstream"] is True
+    carry = next(o for o in walk["outputs"] if o["label"] == "Carry")
+    assert carry["assumed_upstream"] is False
+    assert walk["valid"] is True and walk["steps"]
+    mux = next(s for s in walk["steps"] if s["text"].startswith("Multiplexer[14]"))
+    assert "15*" in mux["text"]                          # the assumed value wears a star
+    assert any(e["assumed"] for e in mux["inputs"])
+    assert any("assumed" in n for n in walk["notes"])
+
+
+def test_a_mismatch_behind_an_assumption_is_not_the_circuits_verdict(monkeypatch):
+    from dlc.sim import simulator as sim
+    # pretend the comparator is a component the evaluator cannot run: its
+    # eq output feeds Zero straight away, so the row's value is assumed
+    rules = dict(sim._RULES)
+    rules.pop("Comparator")
+    monkeypatch.setattr(sim, "_RULES", rules)
+    walk, res = _walk_assumed(_CALC, 0)
+    zero = next(o for o in walk["outputs"] if o["label"] == "Zero")
+    assert zero["assumed_upstream"] is True and zero["found"] == "0"
+    assert any("Comparator" in w and "Zero" in w for w in walk["assumptions"])
+
+
+def test_unmodelled_component_reads_zero_and_is_named():
+    from dlc.sim.walkthrough import assumption_policy
+    from types import SimpleNamespace
+    c = parse_dig_file(_CALC)
+    nl = build_netlist(c)
+    spec = extract_test_specs(c)[0]
+    bindings = match_variables_to_io(spec.headers, c)
+    policy = assumption_policy(c, nl, spec, spec.rows[0], bindings)
+    ram = SimpleNamespace(element_name="RAMDualPort", label="DataMem",
+                          is_output=lambda: False)
+    val, why = policy({"comp": ram, "idx": 99, "pin": "D", "nid": -1, "bits": 8,
+                       "path": (), "in_vals": {}, "floating": False, "values": {}})
+    assert val == 0 and why.startswith("DataMem") and "never written" in why
+    val, why = policy({"comp": None, "idx": None, "pin": None, "nid": -1, "bits": 1,
+                       "path": (), "in_vals": {}, "floating": True, "values": {}})
+    assert val == 0 and "unconnected" in why

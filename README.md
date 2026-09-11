@@ -83,11 +83,11 @@ v0.1.0 (2026/8/23) — first packaged release.
 *Summarize circuit* on the L2 Library tab returns six cards. The
 subcircuit card lists every child with the lab's one-line role
 above what the model says about it. The signal-flow card traces
-one real test row, the same row the tool picks for its own replay.
+one real test row.
 
 Its **Play the walkthrough** button first checks that the circuit really produces the row's expected outputs,
 then switches to the Dashboard, stops any clock tick or signal flow shown there, and walks the row through the circuit as a wavefront: every **Next** click lights the next group of components and the wires that reach them, with a sentence per component; a component waits until all its inputs have arrived; an output port lights
-with its value as soon as the signal reaches it; one clock cycle only, register outputs are the starting values.
+with its value as soon as the signal reaches it; one clock cycle only. Where the evaluator gets stuck (a child file that is not loaded or has no formula model, a memory, an unconnected input) the walkthrough assumes a value, the one the test row expects on that wire when it reaches an output port, otherwise 0 as after power-on, marks it with * and lists every assumption on the card. Transistor-level circuits are not walked through yet.
 
 ### Working offline
 

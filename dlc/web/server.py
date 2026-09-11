@@ -1466,22 +1466,23 @@ def _lab_manifest(circuit, filename: str):
         return None
 
 
-def _example_row(circuit, spec_index: int = 0) -> dict | None:
-    """The row the Layer 2 summary traces and the walkthrough replays."""
+def _example_row(circuit, spec_index: int | None = None) -> dict | None:
     from dlc.sim.walkthrough import pick_example_row
     from dlc.testing.spec import match_variables_to_io
     try:
         specs = extract_test_specs(circuit)
-        spec = specs[spec_index]
-        bindings = match_variables_to_io(spec.headers, circuit)
-        row = pick_example_row(spec, bindings)
+        wanted = [spec_index] if spec_index is not None else range(len(specs))
+        for i in wanted:
+            spec = specs[i]
+            bindings = match_variables_to_io(spec.headers, circuit)
+            row = pick_example_row(spec, bindings)
+            if row is not None:
+                return {"spec_index": i, "spec_name": spec.name,
+                        "row_index": row.line_index, "raw": row.raw,
+                        "columns": list(spec.headers)}
     except Exception:
         return None
-    if row is None:
-        return None
-    return {"spec_index": spec_index, "spec_name": spec.name,
-            "row_index": row.line_index, "raw": row.raw,
-            "columns": list(spec.headers)}
+    return None
 
 
 class WalkthroughRequest(BaseModel):
@@ -1494,7 +1495,7 @@ class WalkthroughRequest(BaseModel):
 @app.post("/api/l2/walkthrough")
 def l2_walkthrough(req: WalkthroughRequest) -> dict:
     from dlc.sim import models as formula_models
-    from dlc.sim.walkthrough import build_walkthrough
+    from dlc.sim.walkthrough import assumption_policy, build_walkthrough
     from dlc.testing.spec import match_variables_to_io
 
     target = _resolve_target(req.session_id, req.filename)
@@ -1523,9 +1524,11 @@ def l2_walkthrough(req: WalkthroughRequest) -> dict:
             if r:
                 roles[ref.reference] = r
     try:
-        replay = RowReplay(circuit, netlist, graph, spec, model_resolver=resolver)
-        res = replay.upto(row.line_index)
         bindings = match_variables_to_io(spec.headers, circuit)
+        policy = assumption_policy(circuit, netlist, spec, row, bindings)
+        replay = RowReplay(circuit, netlist, graph, spec, model_resolver=resolver,
+                           assume=policy)
+        res = replay.upto(row.line_index)
         walk = build_walkthrough(circuit, netlist, graph, spec, row, res,
                                  bindings, roles=roles)
     except Exception as exc:
@@ -1537,11 +1540,14 @@ def l2_walkthrough(req: WalkthroughRequest) -> dict:
             + " come from the lab's formula model of that file.")
     walk["net_values"] = {
         str(nid): {"value": val, "bits": res.net_bits.get(nid, 1),
-                   "hex": format(val, "X")}
+                   "hex": format(val, "X"), "assumed": nid in res.assumed}
         for nid, val in res.net_values.items()
     }
     walk["node_svgs"] = _node_reactions(circuit, netlist, res)
-    walk["unresolved"] = len(res.unresolved_nets)
+    clock_idx = {i for i, c in enumerate(circuit.components) if c.element_name == "Clock"}
+    clock_nets = {net.net_id for net in netlist.nets
+                  if any(p.component_index in clock_idx for p in net.pins)}
+    walk["unresolved"] = len(set(res.unresolved_nets) - clock_nets)
     return {"ok": True, "warning": None, "spec_index": req.spec_index,
             "spec_name": spec.name, **walk}
 

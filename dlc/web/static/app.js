@@ -2575,7 +2575,18 @@ function l2FlowBodyHtml(text, extras) {
     block = `<div class="l2-walk-hint">Row ${walk.row_index} of the tests: ` +
       `<code>${escapeHtml(walk.raw || "")}</code></div>`;
     const unknown = (walk.outputs || []).filter((o) => o.found == null).map((o) => o.label);
-    if (walk.valid === false && (unknown.length || walk.unresolved)) {
+    const assumed = walk.assumptions || [];
+    if (assumed.length) {
+      block += `<div class="l2-walk-hint">Where the evaluator was stuck, values marked * were assumed: ` +
+        `${escapeHtml(assumed.slice(0, 3).join("; "))}${assumed.length > 3 ? `; and ${assumed.length - 3} more` : ""}.</div>`;
+      const off = (walk.outputs || []).filter((o) => o.ok === false && o.assumed_upstream)
+        .map((o) => `${o.label} gives ${o.found} where the row expects ${o.expected}`);
+      if (off.length) {
+        block += `<div class="l2-walk-hint">With those assumed values ${escapeHtml(off.join("; "))}; ` +
+          `the walkthrough still plays, marked values included.</div>`;
+      }
+    }
+    if (unknown.length) {
       // the evaluator could not compute the row (memory, clocked state it
       // does not model): not the circuit's fault, so no "invalid" verdict
       block += `<div class="l2-walk-invalid">No walkthrough for this row: the built-in evaluator cannot compute ` +
@@ -2584,10 +2595,11 @@ function l2FlowBodyHtml(text, extras) {
     } else if (walk.valid === false) {
       const bad = (walk.outputs || []).filter((o) => o.ok === false)
         .map((o) => `${o.label} gives ${o.found == null ? "?" : o.found} instead of ${o.expected}`).join("; ");
+      const unk = walk.unresolved ? ` ${walk.unresolved} net value${walk.unresolved === 1 ? "" : "s"} stay unknown to the built-in evaluator, which may be the cause.` : "";
       block += `<div class="l2-walk-invalid">Flow example invalid: on this row your circuit does not produce ` +
-        `the expected outputs (${escapeHtml(bad)}). Run the tests on the Dashboard and use Mode A on the L3 Coach tab first.</div>`;
+        `the expected outputs (${escapeHtml(bad)}).${unk} Run the tests on the Dashboard and use Mode A on the L3 Coach tab first.</div>`;
     } else if (!(walk.steps || []).length) {
-      block += `<div class="l2-walk-hint">Nothing to walk through: no component lies between the inputs and the outputs on this row.</div>`;
+      block += `<div class="l2-walk-hint">Nothing to walk through on this row.</div>`;
     } else {
       const n = (walk.steps || []).length;
       block += `<div class="l2-walk-row"><button type="button" class="l2-walk-btn" data-l2-walk="1">` +
@@ -2687,10 +2699,13 @@ function l2LightEdge(e, nv) {
   e.removeClass("sig-dim sig-none sig-hi sig-lo sig-bus");
   if (!info) { e.addClass("sig-none"); return; }
   const bits = info.bits || 1;
-  if (bits <= 1) e.addClass(info.value ? "sig-hi" : "sig-lo");
-  else {
+  const star = info.assumed ? "*" : "";
+  if (bits <= 1) {
+    e.addClass(info.value ? "sig-hi" : "sig-lo");
+    if (star) e.data("sigLabel", String(info.value) + star);
+  } else {
     e.addClass("sig-bus");
-    e.data("sigLabel", bits <= 8 && info.value != null ? String(info.value) : "0x" + (info.hex || "0"));
+    e.data("sigLabel", (bits <= 8 && info.value != null ? String(info.value) : "0x" + (info.hex || "0")) + star);
   }
 }
 
@@ -2710,6 +2725,20 @@ function l2WalkLightOutputs(st, lit) {
       if (n.data("baseLabel") == null) n.data("baseLabel", n.data("label"));
       n.data("label", n.data("baseLabel") + "\n= " + v);
     }
+  });
+}
+
+function l2WalkLightRemainingOutputs(st, lit) {
+  const found = {};
+  (st.walk.outputs || []).forEach((o) => { found[o.label] = o.found; });
+  cy.nodes(".sig-dim").forEach((n) => {
+    if (n.data("element_name") !== "Out") return;
+    const v = found[n.data("comp_label")];
+    if (v == null) return;
+    n.removeClass("sig-dim").addClass("walk-focus");
+    lit.merge(n);
+    if (n.data("baseLabel") == null) n.data("baseLabel", n.data("label"));
+    n.data("label", n.data("baseLabel") + "\n= " + v);
   });
 }
 
@@ -2766,6 +2795,7 @@ function l2WalkStart() {
     `<b>Ready.</b> The inputs and the registers' current values are lit. ` +
     `Each <b>Next</b> lets the signal reach the next group of components; ` +
     `a component waits until all of its inputs have arrived.` +
+    ((walk.assumptions || []).length ? ` Values marked <b>*</b> were assumed where the evaluator was stuck.` : "") +
     (ins ? `<div class="l2-walk-final">Inputs: ${escapeHtml(ins)}.</div>` : "");
   board.querySelector(".l2-walk-bar > i").style.width = "0%";
   board.querySelector(".l2-walk-count").textContent = `0 / ${waves.length}`;
@@ -2811,6 +2841,7 @@ function l2WalkNext() {
       }
     });
     l2WalkLightOutputs(st, lit);
+    if (st.k >= st.waves.length) l2WalkLightRemainingOutputs(st, lit);
   });
   const board = l2WalkBoard();
   const last = st.k >= st.waves.length;

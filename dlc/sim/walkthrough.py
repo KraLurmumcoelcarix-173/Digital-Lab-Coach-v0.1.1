@@ -10,6 +10,91 @@ _SKIP = frozenset({"Tunnel", "Testcase", "Rectangle", "Text", "Probe",
 _SOURCES = frozenset({"In", "Const", "Ground", "VDD", "Clock"})
 _STATE = frozenset({"Register", "RAM", "RAMDualPort", "EEPROM", "Counter",
                     "D_FF", "JK_FF", "T_FF", "RS_FF"})
+_TRANSISTORS = frozenset({"NFET", "PFET", "FGNFET", "FGPFET"})
+_MEMORY = frozenset({"RAMDualPort", "RAMSinglePort", "RAMAsync", "Memory",
+                     "EEPROM", "EEPROMDualPort", "RegisterFile"})
+
+
+def assumption_policy(circuit, netlist, spec, row, bindings):
+    col = {h: i for i, h in enumerate(spec.headers)}
+    expected_by_label: dict[str, int] = {}
+    for h, b in bindings.items():
+        if b is None or b.role != "output" or h not in col:
+            continue
+        i = col[h]
+        tok = row.values[i] if i < len(row.values) else None
+        if tok is not None and tok.kind == "int" and tok.value is not None:
+            expected_by_label[h] = tok.value
+    expected_by_net: dict[int, tuple[str, int]] = {}
+    sinks_of: dict[int, list[tuple[int, str]]] = {}
+    net_of_pin: dict[tuple[int, str], int] = {}
+    for net in netlist.nets:
+        for p in net.pins:
+            comp = circuit.components[p.component_index]
+            if comp.is_output() and comp.label in expected_by_label:
+                expected_by_net[net.net_id] = (comp.label, expected_by_label[comp.label])
+            if p.direction == "in":
+                sinks_of.setdefault(net.net_id, []).append((p.component_index, p.pin_name))
+            net_of_pin[(p.component_index, p.pin_name)] = net.net_id
+
+    def expected_for(nid: int, values: dict) -> tuple[str, int, str] | None:
+        seen = set()
+        frontier = [(nid, [])]
+        while frontier:
+            cur, via = frontier.pop(0)
+            if cur in seen or len(via) > 6:
+                continue
+            seen.add(cur)
+            hit = expected_by_net.get(cur)
+            if hit is not None:
+                return hit[0], hit[1], " through ".join(via)
+            for cidx, pin in sinks_of.get(cur, []):
+                comp = circuit.components[cidx]
+                if comp.element_name == "Multiplexer" and pin.startswith("in"):
+                    sel_net = net_of_pin.get((cidx, "sel"))
+                    sel = values.get(sel_net) if sel_net is not None else None
+                    if sel is not None and pin == f"in{sel}":
+                        out_net = net_of_pin.get((cidx, "out"))
+                        if out_net is not None:
+                            frontier.append((out_net, via + [f"Multiplexer[{cidx}]"]))
+        return None
+
+    def policy(ctx):
+        comp = ctx["comp"]
+        bits = ctx.get("bits") or 1
+        who = None
+        if comp is not None:
+            who = comp.label or comp.element_name.replace(".dig", "")
+            if comp.element_name.endswith(".dig") and comp.label:
+                who = f"{comp.label} ({comp.element_name})"
+            elif comp.element_name.endswith(".dig"):
+                who = comp.element_name
+        hit = (expected_for(ctx["nid"], ctx.get("values") or {})
+               if not ctx.get("path") else None)
+        if hit is not None:
+            label, val, via = hit
+            pin = ctx.get("pin") or ""
+            src = (f"{who}.{pin}" if comp is not None and pin and "@" not in pin
+                   else f"{who}'s output" if comp is not None else "the wire")
+            return val & _mask(bits), (f"{src} = {fmt_value(val, bits)} as the test "
+                                       f"row expects on {label}"
+                                       + (f" (through {via})" if via else ""))
+        if comp is None:
+            return 0, "an unconnected input reads 0"
+        kind = comp.element_name
+        pin = ctx.get("pin") or "out"
+        if "@" in pin:            # an implicit pin of a child whose file is missing
+            pin = "one output"
+        if kind.endswith(".dig"):
+            return 0, (f"{who}: the evaluator cannot run this child here (file "
+                       f"not loaded or no formula model), so {pin} = 0")
+        if kind in _MEMORY:
+            return 0, f"{who}: a memory word that was never written reads 0 ({pin} = 0)"
+        if kind == "Counter":
+            return 0, f"{who}: the counter sits at 0 after reset ({pin} = 0)"
+        return 0, f"{who}: {kind} is not modelled by the evaluator, so {pin} = 0"
+
+    return policy
 _GATE_WORD = {"And": "AND", "Or": "OR", "XOr": "XOR", "NAnd": "NAND",
               "NOr": "NOR", "XNOr": "XNOR"}
 # Safety caps: when a circuit exceeds the cap, the steps are folded.
@@ -109,11 +194,14 @@ def _pin_key(pin: str):
 
 def _pin_entries(pins: _Pins, pairs) -> list[dict]:
     out = []
+    assumed = getattr(pins.res, "assumed", None) or {}
     for pn, nid in sorted(pairs, key=lambda x: _pin_key(x[0])):
         v = pins.value(nid)
         b = pins.bits(nid)
-        out.append({"pin": pn, "net_id": nid, "bits": b,
-                    "value": v, "text": fmt_value(v, b)})
+        star = nid in assumed
+        out.append({"pin": pn, "net_id": nid, "bits": b, "value": v,
+                    "text": fmt_value(v, b) + ("*" if star else ""),
+                    "assumed": star})
     return out
 
 
@@ -325,6 +413,8 @@ def build_walkthrough(circuit, netlist, graph, spec, row, res: SimResult,
             ok = (found & _mask(width)) == (expected & _mask(width))
         c = _active_cone(circuit, netlist, graph, res, out_idx)
         cone |= c
+        assumed_nets = set(getattr(res, "assumed", None) or {})
+        cone_nets = {nid for i in c for _pn, _d, nid in pins.by_comp.get(i, [])}
         in_net = pins.pin_net(out_idx, "in")
         drv = pins.driver_of_net.get(in_net) if in_net is not None else None
         expr = (_expression(circuit, pins, drv, c, 0, set(),
@@ -337,6 +427,7 @@ def build_walkthrough(circuit, netlist, graph, spec, row, res: SimResult,
             "expected": fmt_value(expected, width) if expected is not None else None,
             "found": fmt_value(found, width) if found is not None else None,
             "ok": ok,
+            "assumed_upstream": bool(assumed_nets & cone_nets),
             "expression": f"{h} = {expr}",
         })
 
@@ -379,7 +470,17 @@ def build_walkthrough(circuit, netlist, graph, spec, row, res: SimResult,
         notes.append(f"{len(steps) - len(keep)} quiet step(s) (outputs 0) "
                      f"folded to keep the walkthrough small.")
         steps = sorted(keep, key=lambda s: s["wave"])
-    if not steps:
+    assumptions: list[str] = []
+    for why in (getattr(res, "assumed", None) or {}).values():
+        if why not in assumptions:
+            assumptions.append(why)
+    if assumptions:
+        notes.append(f"{len(res.assumed)} value(s) marked * were assumed where the "
+                     f"evaluator was stuck.")
+    if not steps and any(c.element_name in _TRANSISTORS for c in circuit.components):
+        notes.append("transistor-level circuits are not walked through yet: "
+                     "the signal graph does not run through transistor channels.")
+    elif not steps:
         notes.append("no component lies between the inputs and the outputs "
                      "on this row.")
     return {
@@ -387,10 +488,11 @@ def build_walkthrough(circuit, netlist, graph, spec, row, res: SimResult,
         "raw": row.raw,
         "inputs": inputs,
         "outputs": outputs,
-        "valid": all(o["ok"] is not False for o in outputs),
+        "valid": all(o["ok"] is not False or o["assumed_upstream"] for o in outputs),
         "sources": [i for i, c in enumerate(circuit.components)
                     if c.element_name in _SOURCES or c.element_name in _STATE],
         "steps": steps,
         "waves": waves,
         "notes": notes,
+        "assumptions": assumptions,
     }

@@ -27,7 +27,7 @@ def test_walkthrough_endpoint_returns_steps_values_and_expressions():
             "spec_index": 0, "row_index": 0}).json()
         assert r["ok"] is True and r["row_index"] == 0
         assert r["spec_name"] and r["steps"]
-        assert r["net_values"] and set(next(iter(r["net_values"].values()))) == {"value", "bits", "hex"}
+        assert r["net_values"] and set(next(iter(r["net_values"].values()))) == {"value", "bits", "hex", "assumed"}
         out = next(o for o in r["outputs"] if o["label"] == "Result")
         assert out["ok"] is True and out["expression"].startswith("Result = ")
         # Op=3 (row 6) runs through the boolean unit: the child is a step
@@ -108,5 +108,61 @@ def test_walkthrough_reports_how_many_nets_stayed_unknown():
             "session_id": sid, "filename": "tier3_calculator.dig",
             "spec_index": 0, "row_index": 0}).json()
         assert r["ok"] is True and r["unresolved"] == 0
+    finally:
+        server._SESSIONS.pop(sid, None)
+
+
+def test_clock_net_is_not_counted_as_unknown():
+    pipe = f"{_BASE}/tier3_realistic/pipelined_adder_correct.dig"
+    sid = _upload([pipe])
+    try:
+        r = client.post("/api/l2/walkthrough", json={
+            "session_id": sid, "filename": "pipelined_adder_correct.dig",
+            "spec_index": 0, "row_index": 2}).json()
+        assert r["ok"] is True and r["valid"] is True and r["unresolved"] == 0
+    finally:
+        server._SESSIONS.pop(sid, None)
+
+
+def test_example_row_comes_from_the_first_testcase_with_a_usable_row(tmp_path):
+    from dlc.parser.dig_parser import parse_dig_file
+    xml = open(_CALC, encoding="utf-8").read()
+    head = "A B Ci Op Result Carry Zero Bit0\n"
+    start = xml.index("<visualElement>", xml.index("<elementName>Testcase</elementName>") - 200)
+    end = xml.index("</visualElement>", start) + len("</visualElement>")
+    block = xml[start:end]
+    i = block.index(head) + len(head)
+    j = block.index("</dataString>")
+    dontcare = block[:i] + "5 3 0 0 X X X X\n" + block[j:]
+    p = tmp_path / "tier3_calculator.dig"
+    p.write_text(xml[:start] + dontcare + "\n" + block + xml[end:], encoding="utf-8")
+    ex = server._example_row(parse_dig_file(str(p)))
+    assert ex["spec_index"] == 1 and ex["row_index"] == 0 and ex["raw"].startswith("5 3")
+    assert server._example_row(parse_dig_file(str(p)), spec_index=0) is None
+
+
+def test_transistor_circuit_says_why_it_has_no_steps():
+    cmos = f"{_BASE}/tier2.5_transistor/and2_cmos.dig"
+    sid = _upload([cmos])
+    try:
+        r = client.post("/api/l2/walkthrough", json={
+            "session_id": sid, "filename": "and2_cmos.dig",
+            "spec_index": 0, "row_index": 3}).json()
+        assert r["ok"] is True and r["valid"] is True and r["steps"] == []
+        assert any("transistor" in n for n in r["notes"])
+    finally:
+        server._SESSIONS.pop(sid, None)
+
+
+def test_walkthrough_reply_lists_assumptions_and_marks_assumed_nets():
+    sid = _upload([_CALC])
+    try:
+        r = client.post("/api/l2/walkthrough", json={
+            "session_id": sid, "filename": "tier3_calculator.dig",
+            "spec_index": 0, "row_index": 6}).json()
+        assert r["ok"] is True and r["valid"] is True and r["steps"]
+        assert r["assumptions"] and r["assumptions"][0].startswith("bool_unit.dig")
+        assert any(v["assumed"] for v in r["net_values"].values())
+        assert r["unresolved"] == 0
     finally:
         server._SESSIONS.pop(sid, None)

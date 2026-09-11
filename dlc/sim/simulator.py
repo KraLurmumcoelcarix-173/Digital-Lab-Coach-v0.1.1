@@ -13,6 +13,12 @@ from dlc.facts.net_width import infer_net_widths
 from dlc.facts.splitter import parse_splitting
 from dlc.parser.pin_geometry import inverted_input_names
 
+# never given an assumed value: they carry no logic of their own
+_NEVER_ASSUMED = frozenset({
+    "Tunnel", "Testcase", "Text", "Rectangle", "Probe", "PullUp", "PullDown",
+    "Seven-Seg", "LED", "Out", "In", "Clock", "Const", "Ground", "VDD",
+})
+
 _UNMODELED = frozenset({
     "Register", "Counter", "Memory",
     "RAMDualPort", "RAMSinglePort", "D_FF", "T_FF", "JK_FF", "FlipflopD",
@@ -26,6 +32,9 @@ class SimResult:
     output_values: dict[str, int] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     reg_next: dict[tuple[int, ...], int] = field(default_factory=dict)
+    # net -> why its value was assumed rather than computed (only when the
+    # caller passed an `assume` policy; Layer 1 never does)
+    assumed: dict[int, str] = field(default_factory=dict)
 
 
 def _mask(bits: int) -> int:
@@ -338,6 +347,7 @@ def simulate(
     capture_path: tuple[int, ...] | None = None,
     capture_box: dict | None = None,
     model_resolver=None,
+    assume=None,
     _depth: int = 0,
     _max_depth: int = 16,
 ) -> SimResult:
@@ -491,8 +501,13 @@ def simulate(
 
     max_iters = len(circuit.components) + 4
     sub_cache: dict[int, tuple] = {}
-    for _ in range(max_iters):
+
+    stuck_pins: dict[int, list[tuple[str, int]]] = {}
+
+    def _propagate() -> None:
+      for _ in range(max_iters):
         changed = False
+        stuck_pins.clear()
         for idx, comp in enumerate(circuit.components):
             pins = comp_pins.get(idx, [])
             if not pins:
@@ -553,7 +568,7 @@ def simulate(
                     outs, child_rn = _eval_subcircuit(
                         comp, idx, in_vals, child_by_index, _depth, _max_depth,
                         state_store, path, capture_path, capture_box,
-                        model_resolver=model_resolver)
+                        model_resolver=model_resolver, assume=assume)
                     sub_cache[idx] = (sig, outs, child_rn)
                 if child_rn:
                     result.reg_next.update(child_rn)
@@ -563,15 +578,73 @@ def simulate(
             if outs is None:
                 if comp.element_name in _UNMODELED or comp.element_name.endswith(".dig"):
                     have_unmodeled.add(comp.element_name)
+                stuck_pins[idx] = [(name, nid) for name, d, nid in pins
+                                   if d == "out" and nid not in net_values]
                 continue
             for name, direction, nid in pins:
                 if direction == "out" and name in outs:
                     if set_net(nid, outs[name]):
                         changed = True
+            missing = [(name, nid) for name, d, nid in pins
+                       if d == "out" and name not in outs and nid not in net_values]
+            if missing:
+                stuck_pins[idx] = missing
         if _switch_pass():
             changed = True
         if not changed:
             break
+
+    def _assumption_pass() -> bool:
+        made = False
+        for net in netlist.nets:
+            nid = net.net_id
+            if nid in net_values or not net.sinks() or net.drivers():
+                continue
+            stuck = [p for p in net.pins if p.direction not in ("in", "out")
+                     and circuit.components[p.component_index].element_name
+                     not in _NEVER_ASSUMED]
+            comp_idx = stuck[0].component_index if stuck else None
+            comp = circuit.components[comp_idx] if comp_idx is not None else None
+            got = assume({"comp": comp, "idx": comp_idx,
+                          "pin": stuck[0].pin_name if stuck else None,
+                          "nid": nid, "bits": result.net_bits.get(nid, 1),
+                          "path": path, "in_vals": {}, "floating": True,
+                          "values": net_values})
+            if got is not None:
+                val, why = got
+                if set_net(nid, val):
+                    result.assumed[nid] = why
+                    made = True
+        if made:
+            return True
+        for idx, outs_unknown in list(stuck_pins.items()):
+            comp = circuit.components[idx]
+            if comp.element_name in _NEVER_ASSUMED or comp.is_output():
+                continue
+            pins = comp_pins.get(idx, [])
+            in_vals = {name: net_values[nid] for name, d, nid in pins
+                       if d == "in" and nid in net_values}
+            for name, nid in outs_unknown:
+                if nid in net_values:
+                    continue
+                got = assume({"comp": comp, "idx": idx, "pin": name, "nid": nid,
+                              "bits": result.net_bits.get(nid, 1), "path": path,
+                              "in_vals": in_vals, "floating": False,
+                              "values": net_values})
+                if got is None:
+                    continue
+                val, why = got
+                if set_net(nid, val):
+                    result.assumed[nid] = why
+                    made = True
+        return made
+
+    _propagate()
+    if assume is not None:
+        for _ in range(max_iters):
+            if not _assumption_pass():
+                break
+            _propagate()
     has_register = False
     for idx, comp in enumerate(circuit.components):
         if comp.element_name == "RegisterFile":
@@ -680,12 +753,14 @@ def simulate_sequential(
 
 class RowReplay:
 
-    def __init__(self, circuit, netlist, graph, spec, *, model_resolver=None):
+    def __init__(self, circuit, netlist, graph, spec, *, model_resolver=None,
+                 assume=None):
         self.circuit = circuit
         self.netlist = netlist
         self.graph = graph
         self.spec = spec
         self.model_resolver = model_resolver
+        self.assume = assume
         self.rows = [r for r in spec.rows if not r.is_malformed]
         self.results: dict[int, SimResult] = {}
         self._pos = 0
@@ -697,14 +772,14 @@ class RowReplay:
         clocked = _row_has_clock_edge(self.circuit, self.spec.headers, row)
         res = simulate(self.circuit, self.netlist, self.graph, inp,
                        state_store=dict(self._reg_state),
-                       model_resolver=self.model_resolver)
+                       model_resolver=self.model_resolver, assume=self.assume)
         if clocked:
             new_state = dict(self._reg_state)
             new_state.update(res.reg_next)
             self._reg_state = new_state
             res = simulate(self.circuit, self.netlist, self.graph, inp,
                            state_store=dict(self._reg_state),
-                           model_resolver=self.model_resolver)
+                           model_resolver=self.model_resolver, assume=self.assume)
         self.results[row.line_index] = res
         self._pos += 1
 
@@ -762,7 +837,7 @@ def _eval_model(model, in_vals, state, child_path):
 
 def _eval_subcircuit(comp, idx, in_vals, child_by_index, depth, max_depth,
                      state_store, path, capture_path=None, capture_box=None,
-                     model_resolver=None):
+                     model_resolver=None, assume=None):
     child = child_by_index.get(idx)
     if child is None or depth >= max_depth:
         return None, {}
@@ -782,7 +857,7 @@ def _eval_subcircuit(comp, idx, in_vals, child_by_index, depth, max_depth,
             state_store=state_store, path=child_path,
             capture_path=capture_path if want else None,
             capture_box=capture_box if want else None,
-            model_resolver=model_resolver,
+            model_resolver=model_resolver, assume=assume,
             _depth=depth + 1, _max_depth=max_depth,
         )
     except Exception:
