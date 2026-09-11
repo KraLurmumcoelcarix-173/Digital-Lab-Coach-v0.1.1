@@ -633,6 +633,10 @@ function renderGraph(graph) {
 
   cy.on("mouseover", "node", (evt) => {
     const node = evt.target;
+    if (l2WalkState) {
+      if (!node.hasClass("sig-dim")) showNodePopup(node);
+      return;
+    }
     cy.elements().addClass("faded");
     const nb = node.closedNeighborhood();
     nb.removeClass("faded");
@@ -653,6 +657,7 @@ function renderGraph(graph) {
   });
 
   cy.on("mouseover", "edge", (evt) => {
+    if (l2WalkState) return;
     const edge = evt.target;
     // Isolate this wire: fade everything except it and its two endpoints, so
     // its value stays readable even where wires (and their labels) overlap.
@@ -670,6 +675,7 @@ function renderGraph(graph) {
   // click a subcircuit (row selected, clock stopped) to view its inner flow.
   cy.on("tap", "node", (evt) => {
     const node = evt.target;
+    if (l2WalkState) return;                 // the walkthrough owns the graph
     if (node.data("element_name") === "Clock") { toggleClock(); return; }
     if (isSubNode(node)) tryOpenDrill(node, [nodeIndex(node)]);
   });
@@ -2630,6 +2636,7 @@ l2LlmOutput.addEventListener("click", (e) => {
 
 function l2WalkShield(on) {
   let el = document.getElementById("l2-walk-shield");
+  document.body.classList.toggle("l2-walking", !!on);
   if (on) {
     if (!el) {
       el = document.createElement("div");
@@ -2653,10 +2660,12 @@ function l2WalkBoard() {
       `<div class="l2-walk-text"></div>` +
       `<div class="l2-walk-bar"><i></i></div>` +
       `<div class="l2-walk-ctl">` +
+      `<button class="l2-walk-prev hidden" title="back one wave (←)">&#9664; Back</button>` +
       `<button class="l2-walk-next" title="light the next wave (→ or Enter)">Next &#9654;</button>` +
       `<button class="l2-walk-replay hidden" title="start over">&#8635; Replay</button>` +
       `<button class="l2-walk-finish hidden" title="back to the summary">Finish</button>` +
       `<span class="l2-walk-count"></span></div>`;
+    el.querySelector(".l2-walk-prev").onclick = l2WalkPrev;
     el.querySelector(".l2-walk-next").onclick = l2WalkNext;
     el.querySelector(".l2-walk-replay").onclick = () => l2WalkStart();
     el.querySelector(".l2-walk-finish").onclick = l2WalkFinish;
@@ -2709,7 +2718,7 @@ function l2LightEdge(e, nv) {
   }
 }
 
-function l2WalkLightOutputs(st, lit) {
+function l2WalkLightOutputs(st, lit, cls = "walk-focus", current = true) {
   const nv = st.walk.net_values || {};
   const found = {};
   (st.walk.outputs || []).forEach((o) => { found[o.label] = o.found; });
@@ -2717,9 +2726,9 @@ function l2WalkLightOutputs(st, lit) {
     if (n.data("element_name") !== "Out") return;
     const inc = n.incomers("edge");
     if (inc.empty() || inc.sources().some((s) => s.hasClass("sig-dim"))) return;
-    n.removeClass("sig-dim").addClass("walk-focus");
+    n.removeClass("sig-dim").addClass(cls).grabify();
     lit.merge(n);
-    inc.forEach((e) => { l2LightEdge(e, nv); e.addClass("walk-edge"); });
+    inc.forEach((e) => { l2LightEdge(e, nv); if (current) e.addClass("walk-edge"); });
     const v = found[n.data("comp_label")];
     if (v != null) {
       if (n.data("baseLabel") == null) n.data("baseLabel", n.data("label"));
@@ -2728,14 +2737,16 @@ function l2WalkLightOutputs(st, lit) {
   });
 }
 
-function l2WalkLightRemainingOutputs(st, lit) {
+// On the last wave, an output port that has a value but no lit wire into
+// it (its driver is a child whose file is missing) still shows its value.
+function l2WalkLightRemainingOutputs(st, lit, cls = "walk-focus") {
   const found = {};
   (st.walk.outputs || []).forEach((o) => { found[o.label] = o.found; });
   cy.nodes(".sig-dim").forEach((n) => {
     if (n.data("element_name") !== "Out") return;
     const v = found[n.data("comp_label")];
     if (v == null) return;
-    n.removeClass("sig-dim").addClass("walk-focus");
+    n.removeClass("sig-dim").addClass(cls).grabify();
     lit.merge(n);
     if (n.data("baseLabel") == null) n.data("baseLabel", n.data("label"));
     n.data("label", n.data("baseLabel") + "\n= " + v);
@@ -2768,7 +2779,8 @@ function l2WalkStart() {
   clockDone = false;
   hideClockHud();
   sigActive = null;
-  clearSignalFlow(cy);
+  hidePopup();
+  hideSubHint();
   const waves = [];
   walk.steps.forEach((s) => {
     const w = Math.max(1, s.wave || 1);
@@ -2776,101 +2788,125 @@ function l2WalkStart() {
     waves[w - 1].push(s);
   });
   l2WalkState = { walk, waves, k: 0 };
-  cy.batch(() => {
-    cy.elements().addClass("sig-dim");
-    cy.nodes().removeClass("walk-focus walk-done");
-    cy.edges().removeClass("walk-edge");
-    (walk.sources || []).forEach((idx) => {
-      const n = cy.getElementById(String(idx));
-      if (n && n.nonempty()) n.removeClass("sig-dim");
-    });
-  });
-  try { cy.fit(undefined, 60); } catch {}
   l2WalkShield(true);
   const board = l2WalkBoard();
   board.querySelector(".l2-walk-where").textContent =
     `row ${walk.row_index} of '${walk.spec_name || ""}' · ${waves.length} wave${waves.length === 1 ? "" : "s"}`;
-  const ins = (walk.inputs || []).map((i) => `${i.label} = ${i.text}`).join(", ");
-  board.querySelector(".l2-walk-text").innerHTML =
-    `<b>Ready.</b> The inputs and the registers' current values are lit. ` +
-    `Each <b>Next</b> lets the signal reach the next group of components; ` +
-    `a component waits until all of its inputs have arrived.` +
-    ((walk.assumptions || []).length ? ` Values marked <b>*</b> were assumed where the evaluator was stuck.` : "") +
-    (ins ? `<div class="l2-walk-final">Inputs: ${escapeHtml(ins)}.</div>` : "");
-  board.querySelector(".l2-walk-bar > i").style.width = "0%";
-  board.querySelector(".l2-walk-count").textContent = `0 / ${waves.length}`;
-  board.querySelector(".l2-walk-next").classList.remove("hidden");
-  board.querySelector(".l2-walk-next").disabled = false;
-  board.querySelector(".l2-walk-replay").classList.add("hidden");
-  board.querySelector(".l2-walk-finish").classList.add("hidden");
-  const ptr = document.getElementById("l2-walk-pointer");
-  if (ptr) ptr.classList.add("hidden");
   cy.off("pan zoom resize", l2WalkPlacePointer);
   cy.on("pan zoom resize", l2WalkPlacePointer);
+  cy.off("drag", "node", l2WalkPlacePointer);
+  cy.on("drag", "node", l2WalkPlacePointer);
+  l2WalkRender();
+  try { cy.fit(undefined, 60); } catch {}
 }
 
 const L2_WALK_MAX_LINES = 8;   // sentences told per wave; the rest are counted
 
-function l2WalkNext() {
+function l2WalkRender() {
   const st = l2WalkState;
-  if (!st || !cy || st.k >= st.waves.length) return;
+  if (!st || !cy) return;
   const nv = st.walk.net_values || {};
   const svgs = st.walk.node_svgs || {};
-  const wave = st.waves[st.k];
-  st.k += 1;
   const lit = cy.collection();
   cy.batch(() => {
-    cy.nodes(".walk-focus").removeClass("walk-focus").addClass("walk-done");
-    cy.edges(".walk-edge").removeClass("walk-edge");
-    wave.forEach((s) => {
-      const n = cy.getElementById(String(s.component_index));
-      if (!n || n.empty()) return;
-      n.removeClass("sig-dim").addClass("walk-focus");
-      lit.merge(n);
-      const nets = new Set((s.inputs || []).map((e) => e.net_id));
-      n.incomers("edge").forEach((e) => {
-        if (!nets.has(e.data("net_id"))) return;
-        l2LightEdge(e, nv);
-        e.addClass("walk-edge");
-        e.source().removeClass("sig-dim");
-      });
-      const svg = svgs[String(s.component_index)];
-      if (svg) {
-        if (n.data("baseShape") == null) n.data("baseShape", n.data("shape_svg"));
-        n.data("shape_svg", svg);
-      }
+    clearSignalFlow(cy);
+    cy.elements().addClass("sig-dim");
+    cy.nodes().removeClass("walk-focus walk-done").ungrabify();
+    cy.edges().removeClass("walk-edge");
+    (st.walk.sources || []).forEach((idx) => {
+      const n = cy.getElementById(String(idx));
+      if (n && n.nonempty()) n.removeClass("sig-dim").grabify();
     });
-    l2WalkLightOutputs(st, lit);
-    if (st.k >= st.waves.length) l2WalkLightRemainingOutputs(st, lit);
+    for (let w = 0; w < st.k; w++) {
+      const current = w === st.k - 1;
+      const cls = current ? "walk-focus" : "walk-done";
+      const waveLit = cy.collection();
+      st.waves[w].forEach((s) => {
+        const n = cy.getElementById(String(s.component_index));
+        if (!n || n.empty()) return;
+        n.removeClass("sig-dim").addClass(cls).grabify();
+        waveLit.merge(n);
+        const nets = new Set((s.inputs || []).map((e) => e.net_id));
+        n.incomers("edge").forEach((e) => {
+          if (!nets.has(e.data("net_id"))) return;
+          l2LightEdge(e, nv);
+          if (current) e.addClass("walk-edge");
+          e.source().removeClass("sig-dim").grabify();
+        });
+        const svg = svgs[String(s.component_index)];
+        if (svg) {
+          if (n.data("baseShape") == null) n.data("baseShape", n.data("shape_svg"));
+          n.data("shape_svg", svg);
+        }
+      });
+      l2WalkLightOutputs(st, waveLit, cls, current);
+      if (w === st.waves.length - 1) l2WalkLightRemainingOutputs(st, waveLit, cls);
+      if (current) lit.merge(waveLit);
+    }
   });
-  const board = l2WalkBoard();
-  const last = st.k >= st.waves.length;
-  const active = wave.filter((s) => s.active !== false);
-  const quiet = wave.filter((s) => s.active === false);
-  const told = active.concat(quiet).slice(0, L2_WALK_MAX_LINES);
-  const rest = wave.length - told.length;
-  const restQuiet = quiet.length - Math.max(0, told.length - active.length);
-  const more = rest > 0
-    ? `<li class="l2-walk-more">… and ${rest} more component${rest === 1 ? "" : "s"}` +
-      (restQuiet === rest ? ` whose outputs stay 0` : "") + `</li>` : "";
-  board.querySelector(".l2-walk-text").innerHTML =
-    `<b>Wave ${st.k}.</b> ${wave.length} component${wave.length === 1 ? "" : "s"}<ul class="l2-walk-list">` +
-    told.map((s) => `<li>${escapeHtml(s.text)}</li>`).join("") + more + `</ul>` +
-    (last ? `<div class="l2-walk-final">Outputs: ${escapeHtml((st.walk.outputs || []).map((o) =>
-        `${o.label} = ${o.found == null ? "?" : o.found}`).join(", "))}. Done: ` +
-        `Finish returns to the summary, Replay starts over.</div>` : "");
-  board.querySelector(".l2-walk-count").textContent = `${st.k} / ${st.waves.length}`;
-  board.querySelector(".l2-walk-bar > i").style.width = `${Math.round(100 * st.k / st.waves.length)}%`;
-  if (last) {
-    board.querySelector(".l2-walk-next").classList.add("hidden");
-    board.querySelector(".l2-walk-replay").classList.remove("hidden");
-    board.querySelector(".l2-walk-finish").classList.remove("hidden");
-  }
+  l2WalkBoardText(st);
   if (lit.nonempty()) {
     l2WalkKeepVisible(lit);
     l2WalkPointer();
     setTimeout(l2WalkPlacePointer, 380);
+  } else {
+    const ptr = document.getElementById("l2-walk-pointer");
+    if (ptr) ptr.classList.add("hidden");
   }
+}
+
+function l2WalkBoardText(st) {
+  const board = l2WalkBoard();
+  const walk = st.walk;
+  const k = st.k, n = st.waves.length;
+  let html;
+  if (k === 0) {
+    const ins = (walk.inputs || []).map((i) => `${i.label} = ${i.text}`).join(", ");
+    html = `<b>Ready.</b> The inputs and the registers' current values are lit. ` +
+      `Each <b>Next</b> lets the signal reach the next group of components; ` +
+      `a component waits until all of its inputs have arrived. ` +
+      `Drag a lit component or zoom the graph at any time.` +
+      ((walk.assumptions || []).length ? ` Values marked <b>*</b> were assumed where the evaluator was stuck.` : "") +
+      (ins ? `<div class="l2-walk-final">Inputs: ${escapeHtml(ins)}.</div>` : "");
+  } else {
+    const wave = st.waves[k - 1];
+    const last = k >= n;
+    const active = wave.filter((s) => s.active !== false);
+    const quiet = wave.filter((s) => s.active === false);
+    const told = active.concat(quiet).slice(0, L2_WALK_MAX_LINES);
+    const rest = wave.length - told.length;
+    const restQuiet = quiet.length - Math.max(0, told.length - active.length);
+    const more = rest > 0
+      ? `<li class="l2-walk-more">… and ${rest} more component${rest === 1 ? "" : "s"}` +
+        (restQuiet === rest ? ` whose outputs stay 0` : "") + `</li>` : "";
+    html = `<b>Wave ${k}.</b> ${wave.length} component${wave.length === 1 ? "" : "s"}<ul class="l2-walk-list">` +
+      told.map((s) => `<li>${escapeHtml(s.text)}</li>`).join("") + more + `</ul>` +
+      (last ? `<div class="l2-walk-final">Outputs: ${escapeHtml((walk.outputs || []).map((o) =>
+          `${o.label} = ${o.found == null ? "?" : o.found}`).join(", "))}. Done: ` +
+          `Finish returns to the summary, Replay starts over.</div>` : "");
+  }
+  board.querySelector(".l2-walk-text").innerHTML = html;
+  board.querySelector(".l2-walk-count").textContent = `${k} / ${n}`;
+  board.querySelector(".l2-walk-bar > i").style.width = `${n ? Math.round(100 * k / n) : 0}%`;
+  board.querySelector(".l2-walk-prev").classList.toggle("hidden", k === 0);
+  board.querySelector(".l2-walk-next").classList.toggle("hidden", k >= n);
+  board.querySelector(".l2-walk-next").disabled = false;
+  board.querySelector(".l2-walk-replay").classList.toggle("hidden", k < n);
+  board.querySelector(".l2-walk-finish").classList.toggle("hidden", k < n);
+}
+
+function l2WalkNext() {
+  const st = l2WalkState;
+  if (!st || !cy || st.k >= st.waves.length) return;
+  st.k += 1;
+  l2WalkRender();
+}
+
+function l2WalkPrev() {
+  const st = l2WalkState;
+  if (!st || !cy || st.k <= 0) return;
+  st.k -= 1;
+  l2WalkRender();
 }
 
 function l2WalkFinish() {
@@ -2878,7 +2914,8 @@ function l2WalkFinish() {
   l2WalkState = null;
   if (cy) {
     cy.off("pan zoom resize", l2WalkPlacePointer);
-    cy.nodes().removeClass("walk-focus walk-done");
+    cy.off("drag", "node", l2WalkPlacePointer);
+    cy.nodes().removeClass("walk-focus walk-done").grabify();
     cy.edges().removeClass("walk-edge");
     clearSignalFlow(cy);
   }
@@ -2893,7 +2930,10 @@ function l2WalkFinish() {
 window.addEventListener("keydown", (e) => {
   if (!l2WalkState) return;
   if (e.key === "ArrowRight" || e.key === "Enter") {
-    if (l2WalkState.k < l2WalkState.waves.length) l2WalkNext();
+    l2WalkNext();
+    e.preventDefault();
+  } else if (e.key === "ArrowLeft" || e.key === "Backspace") {
+    l2WalkPrev();
     e.preventDefault();
   }
 });

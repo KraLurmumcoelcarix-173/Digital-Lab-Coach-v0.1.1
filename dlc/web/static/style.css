@@ -1635,7 +1635,8 @@ main {
   *# ──────────────────────────────────────────────────────────────────#*/
 .l2-card-grid, .l2-card { white-space: normal; }   /* the body keeps its own pre-wrap */
 /* the subcircuit list can run long */
-.l2-card-subs.expanded .l2-card-body { max-height: 4000px; }
+.l2-card-subs.expanded .l2-card-body,
+.l2-card-flow.expanded .l2-card-body { max-height: 4000px; }
 /* only the signal-flow card wears the colours; the other cards keep theirs */
 .l2-card-flow {
   border: 1px solid transparent;
@@ -1696,11 +1697,13 @@ main {
   background: rgba(15, 23, 42, 0.04);
 }
 #l2-walk-shield.hidden { display: none; }
+body.l2-walking #graph-pane { z-index: 9002; }
+body.l2-walking #hover-popup { z-index: 9004; }
 #l2-walk-board {
   position: fixed;
   left: 16px;
   bottom: 16px;
-  z-index: 9001;
+  z-index: 9003;
   width: min(46vw, 460px);
   border-radius: 14px;
   padding: 10px 12px;
