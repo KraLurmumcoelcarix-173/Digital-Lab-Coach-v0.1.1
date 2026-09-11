@@ -1634,23 +1634,23 @@ main {
   *#  and the signal-flow walkthrough player on the Dashboard graph
   *# ──────────────────────────────────────────────────────────────────#*/
 .l2-card-grid, .l2-card { white-space: normal; }   /* the body keeps its own pre-wrap */
-/* the subcircuit list and the expression block can run long */
-.l2-card-subs.expanded .l2-card-body,
-.l2-card-flow.expanded .l2-card-body { max-height: 4000px; }
-.l2-card {
+/* the subcircuit list can run long */
+.l2-card-subs.expanded .l2-card-body { max-height: 4000px; }
+/* only the signal-flow card wears the colours; the other cards keep theirs */
+.l2-card-flow {
   border: 1px solid transparent;
   border-left-width: 5px;
   background:
     linear-gradient(135deg, #ffffff 0%, #fdf4ff 55%, #eff6ff 100%) padding-box,
     linear-gradient(180deg, #f472b6, #a78bfa 55%, #22d3ee) border-box;
 }
-.l2-card:hover,
-.l2-card.expanded {
+.l2-card-flow:hover,
+.l2-card-flow.expanded {
   background:
     linear-gradient(135deg, #ffffff 0%, #fdf2f8 35%, #ede9fe 70%, #ecfeff 100%) padding-box,
     linear-gradient(180deg, #f472b6, #a78bfa 55%, #22d3ee) border-box;
 }
-.l2-card-num {
+.l2-card-flow .l2-card-num {
   background: linear-gradient(135deg, #f472b6, #818cf8);
   color: #fff;
 }
@@ -1666,29 +1666,12 @@ main {
 .l2-card-body .l2-rich { white-space: normal; }
 .l2-sub-list { margin: 2px 0 0 0; padding-left: 18px; }
 .l2-sub-list li { margin: 0 0 6px 0; }
-.l2-sub-name { font-weight: 700; color: #6d28d9; }
-.l2-sub-role { color: #1f2937; }
+.l2-sub-name { font-weight: 700; }
 .l2-sub-model { font-size: 12px; color: #475569; margin-top: 2px; }
 .l2-sub-rest { font-size: 12px; color: #475569; margin-top: 4px; }
 .l2-flow-prose { white-space: pre-wrap; }
-.l2-flow-expr {
-  margin-top: 8px;
-  padding: 8px 10px;
-  border-radius: 9px;
-  background: linear-gradient(135deg, #0f172a, #1e1b4b 60%, #164e63);
-  color: #e2e8f0;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11.5px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-.l2-expr-title { font-family: inherit; font-weight: 700; color: #f5d0fe; margin-bottom: 4px; }
-.l2-expr-raw { font-weight: 400; color: #a5b4fc; margin-left: 6px; }
-.l2-expr-line { padding: 1px 0; }
-.l2-flow-expr .ok { color: #86efac; }
-.l2-flow-expr .bad { color: #fca5a5; }
-.l2-walk-note { margin-top: 4px; color: #c4b5fd; font-size: 11px; }
-.l2-walk-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.l2-walk-hint code { font-size: 11px; }
+.l2-walk-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0 4px; }
 .l2-walk-btn {
   border: 0;
   border-radius: 999px;
@@ -1740,7 +1723,8 @@ main {
 .l2-walk-where { flex: 1; font-size: 11px; color: #6b7280; }
 .l2-walk-close { background: none; border: 0; cursor: pointer; color: #7c3aed; font-size: 13px; opacity: 0.7; }
 .l2-walk-close:hover { opacity: 1; }
-.l2-walk-text { font-size: 13px; line-height: 1.5; margin: 6px 0 4px; min-height: 38px; }
+.l2-walk-text { font-size: 13px; line-height: 1.5; margin: 6px 0 4px; min-height: 38px; max-height: 50vh; overflow: auto; }
+.l2-walk-more { color: #6b7280; font-style: italic; }
 .l2-walk-final { margin-top: 4px; font-weight: 600; color: #4c1d95; }
 .l2-walk-bar { height: 4px; border-radius: 2px; background: #e9d5ff; overflow: hidden; margin: 4px 0 8px; }
 .l2-walk-bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #ec4899, #8b5cf6, #06b6d4); transition: width 0.3s; }

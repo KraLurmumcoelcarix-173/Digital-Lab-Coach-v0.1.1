@@ -12,8 +12,10 @@ _STATE = frozenset({"Register", "RAM", "RAMDualPort", "EEPROM", "Counter",
                     "D_FF", "JK_FF", "T_FF", "RS_FF"})
 _GATE_WORD = {"And": "AND", "Or": "OR", "XOr": "XOR", "NAnd": "NAND",
               "NOr": "NOR", "XNOr": "XNOR"}
-_MAX_STEPS = 40
+# Safety caps: when a circuit exceeds the cap, the steps are folded.
+_MAX_STEPS = 600
 _MAX_DEPTH = 6
+_MAX_EXPR = 240
 
 
 def fmt_value(v, bits: int | None) -> str:
@@ -328,6 +330,8 @@ def build_walkthrough(circuit, netlist, graph, spec, row, res: SimResult,
         expr = (_expression(circuit, pins, drv, c, 0, set(),
                             _out_pin_of(pins, drv, in_net))
                 if drv is not None else fmt_value(found, width))
+        if len(expr) > _MAX_EXPR:
+            expr = expr[:_MAX_EXPR] + "…"
         outputs.append({
             "label": h, "component_index": out_idx,
             "expected": fmt_value(expected, width) if expected is not None else None,
@@ -359,14 +363,22 @@ def build_walkthrough(circuit, netlist, graph, spec, row, res: SimResult,
             "wave": wave,
             "inputs": ins,
             "outputs": outs,
+            "active": any(e["value"] for e in outs),
             "text": _step_text(circuit, idx, ins, outs, pins, role),
         })
     steps.sort(key=lambda s: s["wave"])
+    waves = max((s["wave"] for s in steps), default=0)
     notes = []
     if len(steps) > _MAX_STEPS:
-        notes.append(f"{len(steps) - _MAX_STEPS} later step(s) folded — the "
-                     f"expression still names the whole path.")
-        steps = steps[:_MAX_STEPS]
+        keep = [s for s in steps if s["active"]]
+        for s in steps:
+            if len(keep) >= _MAX_STEPS:
+                break
+            if not s["active"]:
+                keep.append(s)
+        notes.append(f"{len(steps) - len(keep)} quiet step(s) (outputs 0) "
+                     f"folded to keep the walkthrough small.")
+        steps = sorted(keep, key=lambda s: s["wave"])
     if not steps:
         notes.append("no component lies between the inputs and the outputs "
                      "on this row.")
@@ -379,6 +391,6 @@ def build_walkthrough(circuit, netlist, graph, spec, row, res: SimResult,
         "sources": [i for i, c in enumerate(circuit.components)
                     if c.element_name in _SOURCES or c.element_name in _STATE],
         "steps": steps,
-        "waves": max((s["wave"] for s in steps), default=0),
+        "waves": waves,
         "notes": notes,
     }

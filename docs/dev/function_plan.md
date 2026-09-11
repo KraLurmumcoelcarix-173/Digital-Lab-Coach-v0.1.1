@@ -27,7 +27,7 @@
 | # | Name | Status |
 |---|---|:-:|
 | F11 | LLM client wrapper (SDK, prompt versioning, cost tracking etc.) | Done |
-| F12 | Conceptual explanation generator | Done. The six-card summary now traces a server-chosen example row (`[EXAMPLE ROW]` in the prompt), lists each subcircuit with the lab's one-line role from the manifest or the formula model, and the *Signal flow example* card carries a deterministic expression per output plus a **walkthrough player** (`/api/l2/walkthrough`, no model call) that steps the row through the Dashboard graph one component at a time |
+| F12 | Conceptual explanation generator | Done. The six-card summary now traces a server-chosen example row (`[EXAMPLE ROW]` in the prompt), lists each subcircuit with the lab's one-line role from the manifest or the formula model, and the *Signal flow example* card carries a **walkthrough player** (`/api/l2/walkthrough`, no model call; the response also holds a deterministic expression per output) that steps the row through the Dashboard graph one component at a time |
 | F13 | Prompt-leakage guard | Done |
 
 ## Layer 3 LLM strategic debugging

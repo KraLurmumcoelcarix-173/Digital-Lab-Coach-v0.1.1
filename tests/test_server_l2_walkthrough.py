@@ -99,3 +99,14 @@ def test_example_row_absent_without_a_testcase(tmp_path, monkeypatch):
         assert w["ok"] is False
     finally:
         server._SESSIONS.pop(sid, None)
+
+
+def test_walkthrough_reports_how_many_nets_stayed_unknown():
+    sid = _upload([_CALC, _BOOL])
+    try:
+        r = client.post("/api/l2/walkthrough", json={
+            "session_id": sid, "filename": "tier3_calculator.dig",
+            "spec_index": 0, "row_index": 0}).json()
+        assert r["ok"] is True and r["unresolved"] == 0
+    finally:
+        server._SESSIONS.pop(sid, None)

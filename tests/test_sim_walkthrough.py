@@ -95,3 +95,30 @@ def test_waves_follow_the_signal_and_wait_for_every_input():
     assert [s["wave"] for s in walk["steps"]] == sorted(s["wave"] for s in walk["steps"])
     assert 0 in walk["sources"] or any(
         i in walk["sources"] for i in range(4))   # the In components
+
+
+def test_steps_carry_an_active_flag_for_the_player():
+    walk, _ = _walk(_CALC)
+    active = {s["text"].split(":")[0]: s["active"] for s in walk["steps"]}
+    assert active["Add[7]"] is True            # s = 8
+    assert active["Splitter[8]"] is False      # Op = 0 splits into 0, 0
+    assert active["Comparator[16]"] is True    # gr = 1
+
+
+def test_a_big_circuit_keeps_every_wave_and_folds_quiet_steps_first(monkeypatch):
+    from dlc.sim import walkthrough as wt
+    monkeypatch.setattr(wt, "_MAX_STEPS", 4)
+    walk, _ = _walk(_CALC)
+    assert walk["waves"] == 3                          # the wave count is not cut
+    assert len(walk["steps"]) == 4
+    assert all(s["active"] for s in walk["steps"])     # the quiet splitters folded
+    assert {s["wave"] for s in walk["steps"]} == {1, 2, 3}
+    assert walk["notes"] == ["2 quiet step(s) (outputs 0) folded to keep the walkthrough small."]
+
+
+def test_a_long_expression_is_cut_short(monkeypatch):
+    from dlc.sim import walkthrough as wt
+    monkeypatch.setattr(wt, "_MAX_EXPR", 30)
+    walk, _ = _walk(_CALC)
+    expr = next(o for o in walk["outputs"] if o["label"] == "Zero")["expression"]
+    assert expr.endswith("…") and len(expr) <= len("Zero = ") + 31

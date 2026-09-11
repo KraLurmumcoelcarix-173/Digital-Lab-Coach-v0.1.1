@@ -5,7 +5,7 @@ import os
 import time
 from pathlib import Path
 
-CAPS = {"modeA": 100, "modeB": 100}
+CAPS = {"modeA": 1, "modeB": 2}
 
 
 def limits_path() -> Path:

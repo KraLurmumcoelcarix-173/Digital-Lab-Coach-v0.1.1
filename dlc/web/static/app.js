@@ -2571,17 +2571,17 @@ function l2FlowBodyHtml(text, extras) {
   const walk = extras.walk;
   let block = "";
   if (walk) {
-    const lines = (walk.outputs || []).map((o) => {
-      const mark = o.ok === true ? `<span class="ok">✓</span>` :
-                   o.ok === false ? `<span class="bad">✗ expected ${escapeHtml(o.expected || "?")}</span>` : "";
-      return `<div class="l2-expr-line">${escapeHtml(o.expression)} ${mark}</div>`;
-    }).join("");
-    const notes = (walk.notes || []).length
-      ? `<div class="l2-walk-note">${escapeHtml(walk.notes.join(" "))}</div>` : "";
-    block =
-      `<div class="l2-flow-expr"><div class="l2-expr-title">Row ${walk.row_index} as an expression` +
-      ` <span class="l2-expr-raw">${escapeHtml(walk.raw || "")}</span></div>${lines}${notes}</div>`;
-    if (walk.valid === false) {
+    // the row the walkthrough replays (the same row the model was told to trace)
+    block = `<div class="l2-walk-hint">Row ${walk.row_index} of the tests: ` +
+      `<code>${escapeHtml(walk.raw || "")}</code></div>`;
+    const unknown = (walk.outputs || []).filter((o) => o.found == null).map((o) => o.label);
+    if (walk.valid === false && (unknown.length || walk.unresolved)) {
+      // the evaluator could not compute the row (memory, clocked state it
+      // does not model): not the circuit's fault, so no "invalid" verdict
+      block += `<div class="l2-walk-invalid">No walkthrough for this row: the built-in evaluator cannot compute ` +
+        `${unknown.length ? escapeHtml(unknown.join(", ")) + " " : "it "}(${walk.unresolved || 0} net value${walk.unresolved === 1 ? "" : "s"} ` +
+        `stay unknown). The Dashboard row view shows the same; the official tests need Digital.jar.</div>`;
+    } else if (walk.valid === false) {
       const bad = (walk.outputs || []).filter((o) => o.ok === false)
         .map((o) => `${o.label} gives ${o.found == null ? "?" : o.found} instead of ${o.expected}`).join("; ");
       block += `<div class="l2-walk-invalid">Flow example invalid: on this row your circuit does not produce ` +
@@ -2589,9 +2589,17 @@ function l2FlowBodyHtml(text, extras) {
     } else if (!(walk.steps || []).length) {
       block += `<div class="l2-walk-hint">Nothing to walk through: no component lies between the inputs and the outputs on this row.</div>`;
     } else {
+      const n = (walk.steps || []).length;
       block += `<div class="l2-walk-row"><button type="button" class="l2-walk-btn" data-l2-walk="1">` +
         `&#9654; Play the walkthrough on the circuit</button>` +
-        `<span class="l2-walk-hint">${walk.waves || 1} wave${walk.waves === 1 ? "" : "s"} of components, one Next click each, on the Dashboard graph</span></div>`;
+        `<span class="l2-walk-hint">${n} component${n === 1 ? "" : "s"} in ${walk.waves || 1} wave${walk.waves === 1 ? "" : "s"}, ` +
+        `one Next click each, on the Dashboard graph</span></div>`;
+    }
+    if (walk.valid !== false && walk.unresolved) {
+      block += `<div class="l2-walk-hint">${walk.unresolved} net value${walk.unresolved === 1 ? "" : "s"} stay unknown to the built-in evaluator and show as ?.</div>`;
+    }
+    if ((walk.notes || []).length) {
+      block += `<div class="l2-walk-hint">${escapeHtml(walk.notes.join(" "))}</div>`;
     }
   } else if (extras.walkPending) {
     block = `<div class="l2-walk-hint">Preparing the walkthrough of row ${ex.row_index}<span class="llm-dots" aria-hidden="true"><i></i><i></i><i></i></span></div>`;
@@ -2771,6 +2779,8 @@ function l2WalkStart() {
   cy.on("pan zoom resize", l2WalkPlacePointer);
 }
 
+const L2_WALK_MAX_LINES = 8;   // sentences told per wave; the rest are counted
+
 function l2WalkNext() {
   const st = l2WalkState;
   if (!st || !cy || st.k >= st.waves.length) return;
@@ -2804,9 +2814,17 @@ function l2WalkNext() {
   });
   const board = l2WalkBoard();
   const last = st.k >= st.waves.length;
+  const active = wave.filter((s) => s.active !== false);
+  const quiet = wave.filter((s) => s.active === false);
+  const told = active.concat(quiet).slice(0, L2_WALK_MAX_LINES);
+  const rest = wave.length - told.length;
+  const restQuiet = quiet.length - Math.max(0, told.length - active.length);
+  const more = rest > 0
+    ? `<li class="l2-walk-more">… and ${rest} more component${rest === 1 ? "" : "s"}` +
+      (restQuiet === rest ? ` whose outputs stay 0` : "") + `</li>` : "";
   board.querySelector(".l2-walk-text").innerHTML =
-    `<b>Wave ${st.k}.</b><ul class="l2-walk-list">` +
-    wave.map((s) => `<li>${escapeHtml(s.text)}</li>`).join("") + `</ul>` +
+    `<b>Wave ${st.k}.</b> ${wave.length} component${wave.length === 1 ? "" : "s"}<ul class="l2-walk-list">` +
+    told.map((s) => `<li>${escapeHtml(s.text)}</li>`).join("") + more + `</ul>` +
     (last ? `<div class="l2-walk-final">Outputs: ${escapeHtml((st.walk.outputs || []).map((o) =>
         `${o.label} = ${o.found == null ? "?" : o.found}`).join(", "))}. Done: ` +
         `Finish returns to the summary, Replay starts over.</div>` : "");

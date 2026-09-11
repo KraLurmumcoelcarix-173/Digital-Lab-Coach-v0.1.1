@@ -1541,6 +1541,7 @@ def l2_walkthrough(req: WalkthroughRequest) -> dict:
         for nid, val in res.net_values.items()
     }
     walk["node_svgs"] = _node_reactions(circuit, netlist, res)
+    walk["unresolved"] = len(res.unresolved_nets)
     return {"ok": True, "warning": None, "spec_index": req.spec_index,
             "spec_name": spec.name, **walk}
 

@@ -31,7 +31,7 @@ app = FastAPI(title="DLC course proxy", lifespan=_lifespan)
 
 os.environ["DLC_PROXY_SELF"] = "1"
 
-CALL_BUDGETS = {"modeA": 100, "modeB": 100, "grade": 2, "explain": 2}
+CALL_BUDGETS = {"modeA": 4, "modeB": 4, "grade": 2, "explain": 2}
 _DEFAULT_BUDGET = 12
 
 
