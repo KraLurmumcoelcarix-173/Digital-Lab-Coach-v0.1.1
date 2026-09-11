@@ -67,7 +67,7 @@ def test_defaults_expose_cpu_testcase_and_hidden_runtime():
         os.path.dirname(__file__), "..", "data",
         "official_tests_defaults.json",
     )
-    assert "fec00213" not in open(defaults_path).read()
+    assert "fec00213" not in open(defaults_path, encoding="utf-8").read()
     rom = official_store.get_runtime_payload("cpu.dig", "rom")
     assert rom and rom.startswith("fec00213")
     assert official_store.get_runtime_payload("mystery.dig", "rom") is None
