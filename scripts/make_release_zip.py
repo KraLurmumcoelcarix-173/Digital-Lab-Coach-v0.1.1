@@ -26,7 +26,7 @@ INCLUDE_FILES = [
     "START_HERE.bat", "start.sh", "UNINSTALL.bat", "uninstall.sh",
 ]
 EXCLUDE_DIR_NAMES = {"__pycache__", ".pytest_cache", ".git", ".venv",
-                     "tests"}
+                     "tests","screenshots"}
 EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
 
 
