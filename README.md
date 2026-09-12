@@ -85,6 +85,8 @@ subcircuit card lists every child with the lab's one-line role
 above what the model says about it. The signal-flow card traces
 one real test row and can be played as walkthrough.
 
+![Signal-flow walkthrough on the Dashboard](docs/screenshots/signal_flow.gif)
+
 ### Working offline
 
 Everything deterministic — the graph, structural issues, per-row tests,

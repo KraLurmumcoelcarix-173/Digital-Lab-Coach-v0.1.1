@@ -2610,8 +2610,7 @@ function l2FlowBodyHtml(text, extras) {
       const n = (walk.steps || []).length;
       block += `<div class="l2-walk-row"><button type="button" class="l2-walk-btn" data-l2-walk="1">` +
         `&#9654; Play the walkthrough on the circuit</button>` +
-        `<span class="l2-walk-hint">${n} component${n === 1 ? "" : "s"} in ${walk.waves || 1} wave${walk.waves === 1 ? "" : "s"}, ` +
-        `one Next click each, on the Dashboard graph</span></div>`;
+        `<span class="l2-walk-hint">${n} component${n === 1 ? "" : "s"} in ${walk.waves || 1} wave${walk.waves === 1 ? "" : "s"} </span></div>`;
     }
     if (walk.valid !== false && walk.unresolved) {
       block += `<div class="l2-walk-hint">${walk.unresolved} net value${walk.unresolved === 1 ? "" : "s"} stay unknown to the built-in evaluator and show as ?.</div>`;

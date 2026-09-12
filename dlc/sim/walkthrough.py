@@ -243,10 +243,12 @@ def _step_text(circuit, idx: int, ins: list[dict], outs: list[dict],
         return f"{name}: sel = {sel}, so only out{sel} is 1"
     if kind == "PriorityEncoder":
         active = [e["pin"] for e in ins if e["value"]]
+        if len(active) == 1:
+            return f"{name}: only {active[0]} is active, so num = {_pv(outs, 'num')}"
         if active:
             top = f"in_{_pv(outs, 'num')}"
-            return (f"{name}: {', '.join(active)} active; the highest, "
-                    f"{top}, gives num = {_pv(outs, 'num')}")
+            return (f"{name}: {', '.join(active)} are active; the highest, "
+                    f"{top}, wins: num = {_pv(outs, 'num')}")
         return f"{name}: no input active, num = {_pv(outs, 'num')}, f = 0"
     if kind == "Register":
         q = _pv(outs, "Q")
@@ -257,6 +259,10 @@ def _step_text(circuit, idx: int, ins: list[dict], outs: list[dict],
         return f"{name}: address {_pv(ins, 'A')} reads the word {_pv(outs, 'D')}"
     if kind == "Splitter":
         parts = ", ".join(f"{e['pin']} = {e['text']}" for e in outs)
+        if len(ins) > 1:
+            froms = ", ".join(f"{e['pin']} = {e['text']}" for e in ins)
+            verb = "joins" if len(outs) == 1 else "regroups"
+            return f"{name}: {verb} {froms} into {parts}"
         return f"{name}: splits {', '.join(e['text'] for e in ins)} into {parts}"
     if kind == "BarrelShifter":
         direction = str(comp.attributes.get("direction", "left") or "left")
@@ -267,7 +273,10 @@ def _step_text(circuit, idx: int, ins: list[dict], outs: list[dict],
         return (f"{name}: compares A = {_pv(ins, 'A')} with B = {_pv(ins, 'B')}: "
                 f"gr = {_pv(outs, 'gr')}, eq = {_pv(outs, 'eq')}, le = {_pv(outs, 'le')}")
     if kind == "BitExtender":
-        return f"{name}: extends {_pv(ins, 'in')} to {_pv(outs, 'out')}"
+        in_bits = comp.attributes.get("inputBits", 1)
+        out_bits = comp.attributes.get("outputBits", in_bits)
+        return (f"{name}: sign-extends {_pv(ins, 'in')} ({in_bits}-bit) to "
+                f"{_pv(outs, 'out')} ({out_bits}-bit)")
     if kind == "Seven-Seg":
         lit = [e["pin"] for e in ins if e["value"]]
         return f"{name}: segments {', '.join(lit) if lit else 'none'} lit"
