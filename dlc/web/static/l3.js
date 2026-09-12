@@ -125,15 +125,13 @@ function l3BuildMirror(file) {
     container: box,
     elements,
     style: CY_STYLE,
-    layout: {
-      name: "dagre", rankDir: "LR",
-      nodeSep: 30, rankSep: 60, edgeSep: 10, animate: false,
-    },
+    layout: graphLayoutFor(elements.nodes),
     wheelSensitivity: 0.2,
     minZoom: 0.15, maxZoom: 3,
     boxSelectionEnabled: false,
     autounselectify: true,
   });
+  markSchematic(l3Cy, elements.nodes);
   const inst = l3Cy;
   inst.once("layoutstop", () => {
     setTimeout(() => { try { inst.resize(); inst.fit(undefined, 40); } catch {} }, 0);

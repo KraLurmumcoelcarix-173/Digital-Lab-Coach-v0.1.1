@@ -81,8 +81,24 @@ const CY_STYLE = [
       "arrow-scale": 0.9,
     },
   },
-    // Anchor an edge to the exact port stub on a glyph node (when graph_export
-  // provided one), so arrows meet the ports instead of the bounding box.
+  {
+    selector: "edge.schematic",
+    style: {
+      "curve-style": "taxi",
+      "taxi-direction": "horizontal",
+      "taxi-turn": 30,
+      "taxi-turn-min-distance": 8,
+    },
+  },
+  {
+    selector: "edge.schematic[sw]",
+    style: {
+      "curve-style": "segments",
+      "segment-weights": "data(sw)",
+      "segment-distances": "data(sd)",
+      "edge-distances": "node-position",
+    },
+  },
   { selector: "edge[se]", style: { "source-endpoint": "data(se)" } },
   { selector: "edge[te]", style: { "target-endpoint": "data(te)" } },
   // Switch-level net wiring: plain wires with no arrowhead, like Digital
@@ -582,6 +598,253 @@ function renderCurrent() {
   _resetGrade();
 }
 
+const SCHEMATIC_MIN_SUBCIRCUITS = 3;
+const SCHEMATIC_SCALE = 1.4;
+const SCHEMATIC_MAX_GAP_X = 150;
+const SCHEMATIC_MAX_GAP_Y = 100;
+
+function isSchematicGraph(nodes) {
+  const subs = (nodes || []).filter((n) =>
+    String((n.data || {}).element_name || "").endsWith(".dig")).length;
+  return subs >= SCHEMATIC_MIN_SUBCIRCUITS &&
+    (nodes || []).every((n) => typeof (n.data || {}).x_dig === "number");
+}
+
+function schematicAxisMap(values, maxGap) {
+  const uniq = Array.from(new Set(values)).sort((a, b) => a - b);
+  const map = new Map();
+  let pos = 0;
+  uniq.forEach((v, i) => {
+    if (i > 0) pos += Math.min((v - uniq[i - 1]) * SCHEMATIC_SCALE, maxGap);
+    map.set(v, pos);
+  });
+  return map;
+}
+
+function graphLayoutFor(nodes) {
+  if (isSchematicGraph(nodes)) {
+    const xs = schematicAxisMap(nodes.map((n) => n.data.x_dig), SCHEMATIC_MAX_GAP_X);
+    const ys = schematicAxisMap(nodes.map((n) => n.data.y_dig), SCHEMATIC_MAX_GAP_Y);
+    return {
+      name: "preset", animate: false, fit: true, padding: 40,
+      positions: (n) => ({ x: xs.get(n.data("x_dig")), y: ys.get(n.data("y_dig")) }),
+    };
+  }
+  return { name: "dagre", rankDir: "LR", nodeSep: 30, rankSep: 60, edgeSep: 10, animate: false };
+}
+
+function nodeOrientation(n) {
+  const a = n.data("attributes") || {};
+  const r = ((parseInt(a.rotation, 10) || 0) % 4 + 4) % 4;
+  const mirror = a.mirror === true || a.mirror === "true";
+  return { r, mirror };
+}
+
+function orientPercent(p, o) {
+  const parts = String(p).trim().split(/\s+/).map(parseFloat);
+  if (parts.length !== 2 || parts.some((v) => Number.isNaN(v))) return p;
+  let [x, y] = parts;
+  if (o.mirror) y = -y;
+  if (o.r === 1) [x, y] = [y, -x];
+  else if (o.r === 2) [x, y] = [-x, -y];
+  else if (o.r === 3) [x, y] = [-y, x];
+  return `${x.toFixed(1)}% ${y.toFixed(1)}%`;
+}
+
+function orientSvgData(uri, o) {
+  if (!uri || (o.r === 0 && !o.mirror)) return uri;
+  const m = /^data:image\/svg\+xml;base64,(.*)$/.exec(uri);
+  if (!m) return uri;
+  let svg;
+  try { svg = decodeURIComponent(escape(atob(m[1]))); } catch { return uri; }
+  const head = /^<svg[^>]*>/.exec(svg);
+  const wm = head && /width="([\d.]+)"/.exec(head[0]);
+  const hm = head && /height="([\d.]+)"/.exec(head[0]);
+  if (!head || !wm || !hm) return uri;
+  const w = parseFloat(wm[1]), h = parseFloat(hm[1]);
+  const back = o.r === 1 ? 90 : o.r === 2 ? 180 : o.r === 3 ? -90 : 0;
+  let inner = svg.slice(head[0].length).replace(/<\/svg>\s*$/, "");
+  inner = inner.replace(/<text\b([^>]*)>/g, (tag, attrs) => {
+    const x = parseFloat((/\bx="([\d.-]+)"/.exec(attrs) || [])[1]);
+    const y = parseFloat((/\by="([\d.-]+)"/.exec(attrs) || [])[1]);
+    if (Number.isNaN(x) || Number.isNaN(y)) return tag;
+    let a = attrs;
+    if (o.r === 2) {
+      if (/text-anchor="end"/.test(a)) a = a.replace(/text-anchor="end"/, 'text-anchor="start"');
+      else if (!/text-anchor="middle"/.test(a)) a = a.replace(/text-anchor="start"/, "") + ' text-anchor="end"';
+    }
+    const fs = parseFloat((/font-size="([\d.]+)"/.exec(attrs) || [])[1]) || 7;
+    const t = [];
+    if (o.r === 2 || (o.mirror && o.r === 0)) t.push(`translate(0 ${fs})`);
+    if (o.mirror) t.push(`scale(1 -1) translate(0 ${-2 * y})`);
+    if (back) t.push(`rotate(${back} ${x} ${y})`);
+    return `<text${a} transform="${t.join(" ")}">`;
+  });
+  if (o.mirror) inner = `<g transform="translate(0 ${h}) scale(1 -1)">${inner}</g>`;
+  let W = w, H = h, wrap = inner;
+  if (o.r === 2) wrap = `<g transform="rotate(180 ${w / 2} ${h / 2})">${inner}</g>`;
+  else if (o.r === 1) { W = h; H = w; wrap = `<g transform="translate(0 ${w}) rotate(-90)">${inner}</g>`; }
+  else if (o.r === 3) { W = h; H = w; wrap = `<g transform="translate(${h} 0) rotate(90)">${inner}</g>`; }
+  const out = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${wrap}</svg>`;
+  return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(out)));
+}
+
+function orientSvgFor(n, svg) {
+  const o = n.data("orient");
+  return o ? orientSvgData(svg, o) : svg;
+}
+
+const SCHEMATIC_STUB = 14;
+const SCHEMATIC_MARGIN = 14;
+
+const _NORMAL = { left: { x: -1, y: 0 }, right: { x: 1, y: 0 },
+                  top: { x: 0, y: -1 }, bottom: { x: 0, y: 1 } };
+
+function pinSide(pct) {
+  const [x, y] = String(pct).trim().split(/\s+/).map(parseFloat);
+  if (Number.isNaN(x) || Number.isNaN(y)) return "right";
+  if (Math.abs(x) >= Math.abs(y)) return x < 0 ? "left" : "right";
+  return y < 0 ? "top" : "bottom";
+}
+
+function pinPoint(n, pct) {
+  const [x, y] = String(pct).trim().split(/\s+/).map(parseFloat);
+  const p = n.position();
+  return { x: p.x + (x / 100) * n.width(), y: p.y + (y / 100) * n.height() };
+}
+
+function grownBox(n) {
+  const bb = n.boundingBox({ includeLabels: false });
+  const m = SCHEMATIC_MARGIN;
+  return { x1: bb.x1 - m, x2: bb.x2 + m, y1: bb.y1 - m, y2: bb.y2 + m, cx: (bb.x1 + bb.x2) / 2, cy: (bb.y1 + bb.y2) / 2 };
+}
+
+function synthesizePorts(inst) {
+  inst.nodes().forEach((n) => {
+    const ins = n.incomers("edge").filter((e) => !e.data("te"));
+    const outs = n.outgoers("edge").filter((e) => !e.data("se"));
+    if (ins.empty() && outs.empty()) return;
+    const o = n.data("orient");
+    const pins = Math.max(ins.length, outs.length);
+    if (pins > 4) n.style((o && (o.r === 1 || o.r === 3)) ? "width" : "height", Math.max(38, 9 * pins));
+    const slot = (i, count) => (((i + 0.5) / count) - 0.5) * 80;
+    const sortedIns = ins.sort((a, b) => a.source().position("y") - b.source().position("y"));
+    sortedIns.forEach((e, i) => {
+      const pct = `-50.0% ${slot(i, sortedIns.length).toFixed(1)}%`;
+      e.data("te", o ? orientPercent(pct, o) : pct);
+    });
+    const sortedOuts = outs.sort((a, b) => a.target().position("y") - b.target().position("y"));
+    sortedOuts.forEach((e, i) => {
+      const pct = `50.0% ${slot(i, sortedOuts.length).toFixed(1)}%`;
+      e.data("se", o ? orientPercent(pct, o) : pct);
+    });
+  });
+}
+
+function routeOne(e) {
+  const a = e.source(), b = e.target();
+  const se = e.data("se"), te = e.data("te");
+  if (!se || !te || a.same(b)) return null;
+  const sa = pinSide(se), sb = pinSide(te);
+  const na = _NORMAL[sa], nb = _NORMAL[sb];
+  const P = pinPoint(a, se), Q = pinPoint(b, te);
+  const S = { x: P.x + na.x * SCHEMATIC_STUB, y: P.y + na.y * SCHEMATIC_STUB };
+  const E = { x: Q.x + nb.x * SCHEMATIC_STUB, y: Q.y + nb.y * SCHEMATIC_STUB };
+  const A = grownBox(a), B = grownBox(b);
+  const pts = [S];
+  let cur = S;
+  const horizA = na.x !== 0, horizB = nb.x !== 0;
+  if (horizA) {
+    if ((E.x - cur.x) * na.x < 0) {
+      const yc = E.y < A.cy ? A.y1 : A.y2;
+      cur = { x: cur.x, y: yc }; pts.push(cur);
+    }
+  } else if ((E.y - cur.y) * na.y < 0) {
+    const xc = E.x < A.cx ? A.x1 : A.x2;
+    cur = { x: xc, y: cur.y }; pts.push(cur);
+  }
+  if (horizB) {
+    const onPinSide = (cur.x - E.x) * nb.x >= 0;
+    if (onPinSide && cur.y !== E.y) {
+      let xm = (cur.x + E.x) / 2;
+      if (xm > A.x1 && xm < A.x2) xm = E.x < A.cx ? A.x1 : A.x2;
+      if (xm > B.x1 && xm < B.x2) xm = cur.x < B.cx ? B.x1 : B.x2;
+      pts.push({ x: xm, y: cur.y }); pts.push({ x: xm, y: E.y });
+    } else if (!onPinSide) {
+      const yc = cur.y < B.cy ? B.y1 : B.y2;
+      const xk = (cur.x > B.x1 && cur.x < B.x2) ? (nb.x < 0 ? B.x2 : B.x1) : cur.x;
+      if (xk !== cur.x) pts.push({ x: xk, y: cur.y });
+      pts.push({ x: xk, y: yc }); pts.push({ x: E.x, y: yc });
+    }
+  } else {
+    const onPinSide = (cur.y - E.y) * nb.y >= 0;
+    if (onPinSide && cur.x !== E.x) {
+      let ym = (cur.y + E.y) / 2;
+      if (ym > A.y1 && ym < A.y2) ym = E.y < A.cy ? A.y1 : A.y2;
+      if (ym > B.y1 && ym < B.y2) ym = cur.y < B.cy ? B.y1 : B.y2;
+      pts.push({ x: cur.x, y: ym }); pts.push({ x: E.x, y: ym });
+    } else if (!onPinSide) {
+      const xc = cur.x < B.cx ? B.x1 : B.x2;
+      const yk = (cur.y > B.y1 && cur.y < B.y2) ? (nb.y < 0 ? B.y2 : B.y1) : cur.y;
+      if (yk !== cur.y) pts.push({ x: cur.x, y: yk });
+      pts.push({ x: xc, y: yk }); pts.push({ x: xc, y: E.y });
+    }
+  }
+  pts.push(E);
+  return pts;
+}
+
+function applyRoute(e, pts) {
+  const p0 = e.source().position(), p1 = e.target().position();
+  const dx = p1.x - p0.x, dy = p1.y - p0.y;
+  const L2 = dx * dx + dy * dy;
+  if (!pts || L2 < 1) { e.removeData("sw"); e.removeData("sd"); return; }
+  const L = Math.sqrt(L2);
+  const ws = [], ds = [];
+  pts.forEach((w) => {
+    ws.push(((w.x - p0.x) * dx + (w.y - p0.y) * dy) / L2);
+    ds.push(-((w.x - p0.x) * dy - (w.y - p0.y) * dx) / L);
+  });
+  e.data("sw", ws.map((v) => v.toFixed(4)).join(" "));
+  e.data("sd", ds.map((v) => v.toFixed(2)).join(" "));
+}
+
+function routeSchematicEdges(inst, edges) {
+  (edges || inst.edges()).forEach((e) => {
+    if (!e.hasClass("schematic")) return;
+    applyRoute(e, routeOne(e));
+  });
+}
+
+function markSchematic(inst, nodes) {
+  if (!inst || !isSchematicGraph(nodes)) return;
+  inst.batch(() => {
+    inst.edges().addClass("schematic");
+    inst.nodes().forEach((n) => {
+      const o = nodeOrientation(n);
+      if (o.r === 0 && !o.mirror) return;
+      n.data("orient", o);
+      if (o.r === 1 || o.r === 3) {
+        const w = n.data("shape_w"), h = n.data("shape_h");
+        if (w != null && h != null) { n.data("shape_w", h); n.data("shape_h", w); }
+      }
+      if (n.data("shape_svg")) n.data("shape_svg", orientSvgData(n.data("shape_svg"), o));
+    });
+    inst.edges().forEach((e) => {
+      const so = e.source().data("orient"), to = e.target().data("orient");
+      if (so && e.data("se")) e.data("se", orientPercent(e.data("se"), so));
+      if (to && e.data("te")) e.data("te", orientPercent(e.data("te"), to));
+    });
+    synthesizePorts(inst);
+  });
+  const reroute = () => { try { inst.batch(() => routeSchematicEdges(inst)); } catch {} };
+  inst.one("layoutstop", reroute);
+  setTimeout(reroute, 0);
+  inst.on("dragfree", "node", (evt) => {
+    try { inst.batch(() => routeSchematicEdges(inst, evt.target.connectedEdges())); } catch {}
+  });
+}
+
 function renderGraph(graph) {
   placeholder.classList.add("hidden");
 
@@ -608,24 +871,15 @@ function renderGraph(graph) {
     container: document.getElementById("cy"),
     elements: { nodes: graph.nodes, edges: graph.edges },
     style: CY_STYLE,
-    layout: {
-      name: "dagre",
-      rankDir: "LR",
-      nodeSep: 30,
-      rankSep: 60,
-      edgeSep: 10,
-      animate: false,
-    },
+    layout: graphLayoutFor(graph.nodes),
     wheelSensitivity: 0.2,
     minZoom: 0.15,
     maxZoom: 3,
   });
+  markSchematic(cy, graph.nodes);
 
-  applyNetIdsL1();               // keep the net-id toggle across rebuilds
+  applyNetIdsL1();// keep the net-id toggle across rebuilds
 
-  // If the container was still settling when dagre ran (e.g. graph
-  // built while another tab was active), re-measure and re-fit once
-  // so the tree always starts centered.
   const inst = cy;
   inst.once("layoutstop", () => {
     setTimeout(() => { try { inst.resize(); inst.fit(undefined, 40); } catch {} }, 0);
@@ -771,10 +1025,7 @@ function renderDrillGraph(data) {
     container: box,
     elements: { nodes: data.graph.nodes, edges: data.graph.edges },
     style: CY_STYLE,
-    layout: {
-      name: "dagre", rankDir: "LR",
-      nodeSep: 30, rankSep: 60, edgeSep: 10, animate: false,
-    },
+    layout: graphLayoutFor(data.graph.nodes),
     wheelSensitivity: 0.2,
     minZoom: 0.1, maxZoom: 3,
     // View-only: no dragging, no selection — the only controls are the deeper
@@ -783,6 +1034,7 @@ function renderDrillGraph(data) {
     boxSelectionEnabled: false,
     autounselectify: true,
   });
+  markSchematic(drillCy, data.graph.nodes);
 
   const inst = drillCy;
   inst.once("layoutstop", () => {
@@ -1758,7 +2010,7 @@ function applySignalFlow(sim, inst = cy) {
       const n = inst.getElementById(id);
       if (!n || n.empty()) return;
       if (n.data("baseShape") == null) n.data("baseShape", n.data("shape_svg"));
-      n.data("shape_svg", svgs[id]);
+      n.data("shape_svg", orientSvgFor(n, svgs[id]));
     });
   });
 }
@@ -2835,7 +3087,7 @@ function l2WalkRender() {
         const svg = svgs[String(s.component_index)];
         if (svg) {
           if (n.data("baseShape") == null) n.data("baseShape", n.data("shape_svg"));
-          n.data("shape_svg", svg);
+          n.data("shape_svg", orientSvgFor(n, svg));
         }
       });
       l2WalkLightOutputs(st, waveLit, cls, current);

@@ -13,7 +13,7 @@ We aim to improve quality and effectiveness of introductory hardware science
 education and explore new means of interactive hardware design debugging.
 
 ![Dashboard view of cpu](docs/screenshots/dashboard.png)
-![Dashboard view of t3 calculator](docs/screenshots/dashboard2.png)
+![Dashboard view of mode A gif](docs/screenshots/modeA_sample.gif)
 
 ## Status
 
